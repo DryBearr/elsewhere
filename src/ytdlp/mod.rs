@@ -27,11 +27,14 @@
 //!   `PYTHONNOUSERSITE=1`. [`init`] leaves variables that already match alone.
 //! - `on_event` runs on the calling thread without the Python lock held, so it may block
 //!   or call back into this module.
-//! - On Android and iOS, pass `--cache-dir <app folder>` or `--no-cache-dir`; yt-dlp's
-//!   default cache folder is under `$HOME`.
-//! - iOS apps cannot start processes, so anything that needs ffmpeg, a JavaScript runtime
-//!   or `--exec` is unavailable there.
+//! - YouTube's JavaScript challenges are solved by a JavaScript engine built into the app
+//!   (QuickJS, see js.rs), on every platform. No Deno or Node is needed.
+//! - yt-dlp's cache (`--cache-dir`) defaults to `$XDG_CACHE_HOME/yt-dlp` or `~/.cache/yt-dlp`;
+//!   the phone apps point `XDG_CACHE_HOME` into their own storage (src/platform).
+//! - iOS apps cannot start processes, so anything that needs ffmpeg or `--exec` is
+//!   unavailable there. Without ffmpeg, yt-dlp picks formats that need no merging.
 
+mod js;
 mod python;
 
 use std::fmt;

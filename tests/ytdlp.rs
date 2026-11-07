@@ -360,14 +360,48 @@ fn planned_stop_is_not_an_error() {
 #[ignore = "reaches youtube.com"]
 fn real_site_info() {
     ready();
+    let (events, on_event) = recorder();
     let json = ytdlp::info(
         "https://www.youtube.com/watch?v=jNQXAC9IVRw",
         &[],
-        |_| {},
+        on_event,
         &Cancel::new(),
     )
     .unwrap();
     assert!(json.contains("jNQXAC9IVRw"));
+
+    // YouTube's JavaScript challenges were solved by the engine built into the app.
+    let logs: Vec<String> = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|event| match event {
+            Event::Log { message, .. } => Some(message.clone()),
+            _ => None,
+        })
+        .collect();
+    let all = logs.join("\n");
+    assert!(all.contains("built-in QuickJS"), "{all}");
+    assert!(!all.contains("challenge solving failed"), "{all}");
+    assert!(!all.contains("formats may be missing"), "{all}");
+}
+
+#[test]
+#[ignore = "reaches youtube.com"]
+fn real_site_download() {
+    ready();
+    let dir = folder("youtube");
+    // A single-file format, so no ffmpeg is needed (phones have none).
+    let done = ytdlp::download(
+        "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        &["-P", dir.to_str().unwrap(), "-f", "b"],
+        |_| {},
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(done.files.len(), 1, "{:?}", done.files);
+    let size = fs::metadata(&done.files[0]).unwrap().len();
+    assert!(size > 100_000, "{size} bytes");
 }
 
 /// Base URL of the test server, started on first use.

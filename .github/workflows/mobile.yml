@@ -64,6 +64,7 @@ jobs:
             adb push target/android/libs/x86_64/. /data/local/tmp/elsewhere/lib/
             adb push ytdlp-tests /data/local/tmp/elsewhere/
             adb shell "cd /data/local/tmp/elsewhere && chmod 755 ytdlp-tests && HOME=/data/local/tmp/elsewhere TMPDIR=/data/local/tmp/elsewhere/tmp LD_LIBRARY_PATH=/data/local/tmp/elsewhere/lib YTDLP_TEST_PYTHON_HOME=/data/local/tmp/elsewhere/python ./ytdlp-tests --test-threads=4"
+            adb shell "cd /data/local/tmp/elsewhere && HOME=/data/local/tmp/elsewhere TMPDIR=/data/local/tmp/elsewhere/tmp LD_LIBRARY_PATH=/data/local/tmp/elsewhere/lib YTDLP_TEST_PYTHON_HOME=/data/local/tmp/elsewhere/python ./ytdlp-tests --ignored real_site" || echo "::warning::Real YouTube tests failed on the Android emulator (YouTube often blocks CI machines)"
 
   ios:
     runs-on: macos-latest
@@ -115,6 +116,13 @@ jobs:
         run: |
           SIMCTL_CHILD_YTDLP_TEST_PYTHON_HOME="$PWD/run/python" \
             xcrun simctl spawn "$UDID" "$PWD/run/ytdlp-tests" --test-threads=4
+
+      # YouTube often blocks CI machines, so a failure here is a warning, not an error.
+      - name: Run the real YouTube tests in the simulator
+        continue-on-error: true
+        run: |
+          SIMCTL_CHILD_YTDLP_TEST_PYTHON_HOME="$PWD/run/python" \
+            xcrun simctl spawn "$UDID" "$PWD/run/ytdlp-tests" --ignored real_site
 
       - name: Build the app for the simulator
         run: |

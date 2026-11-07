@@ -119,9 +119,22 @@ fn start(setup: &Setup) -> Result<Py<PyModule>, Error> {
     Python::attach(|py| {
         let load = || -> PyResult<Py<PyModule>> {
             let module = PyModule::from_code(py, &source, c"ytdlp.py", c"elsewhere_ytdlp")?;
+            // YouTube's challenge solver runs in the built-in JavaScript engine (js.rs).
+            let run_js = PyCFunction::new_closure(
+                py,
+                None,
+                None,
+                |args: &Bound<'_, PyTuple>, _: Option<&Bound<'_, PyDict>>| -> PyResult<String> {
+                    let code: String = args.get_item(0)?.extract()?;
+                    // Solving takes seconds; let other Python threads run meanwhile.
+                    args.py()
+                        .detach(|| super::js::run(&code))
+                        .map_err(pyo3::exceptions::PyRuntimeError::new_err)
+                },
+            )?;
             module
                 .getattr("setup")?
-                .call1((setup.python_paths.clone(),))?;
+                .call1((setup.python_paths.clone(), run_js))?;
             Ok(module.unbind())
         };
         load().map_err(|err| {

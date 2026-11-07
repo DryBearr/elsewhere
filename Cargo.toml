@@ -7,8 +7,9 @@ edition = "2024"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-# yt-dlp utility through embedded Python (src/ytdlp). Off by default: without it the app builds with no Python.
-ytdlp = ["dep:pyo3"]
+# yt-dlp utility through embedded Python (src/ytdlp), with a built-in JavaScript engine for
+# YouTube (third_party/quickjs). Off by default: without it the app builds with no Python.
+ytdlp = ["dep:pyo3", "dep:cc"]
 
 [dependencies]
 pyo3 = { version = "0.30", optional = true }
@@ -16,6 +17,8 @@ rusqlite = { version = "0.41", features = ["bundled"] }
 slint = "1.18"
 
 [build-dependencies]
+# Compiles QuickJS for the ytdlp feature. Already in the build through rusqlite's bundled SQLite.
+cc = { version = "1", optional = true }
 slint-build = "1.18"
 
 [target.'cfg(target_os = "android")'.dependencies]

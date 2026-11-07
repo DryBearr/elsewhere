@@ -1,4 +1,6 @@
-# Python packages for yt-dlp. They go into the Android app (scripts/android_python.py)
+# Python packages for yt-dlp. They go into the phone apps (scripts/mobile_python.py)
 # and into vendor/python for the desktop tests (CI).
 yt-dlp==2026.10.26
 certifi==2026.10.23
+# YouTube's challenge solver scripts; run by the built-in JavaScript engine (src/ytdlp/js.rs).
+yt-dlp-ejs==0.8.0

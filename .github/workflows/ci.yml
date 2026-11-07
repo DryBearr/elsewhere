@@ -37,3 +37,8 @@ jobs:
 
       - name: Test
         run: cargo test --features ytdlp
+
+      # YouTube often blocks CI machines, so a failure here is a warning, not an error.
+      - name: Real YouTube tests
+        continue-on-error: true
+        run: cargo test --features ytdlp --test ytdlp -- --ignored real_site

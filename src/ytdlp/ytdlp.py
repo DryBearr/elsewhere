@@ -43,8 +43,9 @@ class Cancelled(Exception):
     """Replaced in setup() by a subclass of yt-dlp's DownloadCancelled. Becomes Error::Cancelled."""
 
 
-def setup(paths):
-    """Put `paths` first on sys.path, block typed input, import yt-dlp. Returns its version."""
+def setup(paths, run_js):
+    """Put `paths` first on sys.path, block typed input, import yt-dlp and give it the
+    built-in JavaScript engine `run_js(code) -> printed text`. Returns yt-dlp's version."""
     global yt_dlp, DownloadCancelled, DownloadError, Cancelled
 
     for path in reversed([os.fspath(path) for path in paths]):
@@ -74,8 +75,52 @@ def setup(paths):
     class _Cancelled(cancelled_base):
         msg = 'Cancelled'
 
+    _add_js_engine(run_js)
     yt_dlp, DownloadCancelled, DownloadError, Cancelled = module, cancelled_base, download_error, _Cancelled
     return version()
+
+
+def _add_js_engine(run_js):
+    """Lets yt-dlp solve YouTube's JavaScript challenges with the engine built into the app.
+
+    yt-dlp's own solvers start Deno, Node or QuickJS as a separate program, which iOS
+    forbids. This one gives the same solver script (from the yt-dlp-ejs package) to
+    `run_js` instead, so YouTube works the same on every platform.
+    """
+    try:
+        from yt_dlp.extractor.youtube.jsc._builtin.ejs import EJSBaseJCP
+        from yt_dlp.extractor.youtube.jsc.provider import (
+            JsChallengeProviderError,
+            register_preference,
+            register_provider,
+        )
+    except ImportError:
+        return  # a yt-dlp without challenge providers; nothing to add
+
+    class ElsewhereJCP(EJSBaseJCP):
+        PROVIDER_NAME = 'elsewhere'
+        JS_RUNTIME_NAME = 'built-in QuickJS'
+        PROVIDER_VERSION = '1.0.0'
+        BUG_REPORT_LOCATION = 'https://github.com/DryBearr/elsewhere/issues'
+
+        def is_available(self):
+            # Always there; becomes False only when no solver script can be found.
+            return self._available
+
+        def _run_js_runtime(self, stdin, /):
+            try:
+                return run_js(stdin)
+            except RuntimeError as err:
+                raise JsChallengeProviderError(f'JavaScript error: {err}') from None
+
+    try:
+        register_provider(ElsewhereJCP)
+    except AssertionError:
+        return  # already registered by an earlier setup()
+
+    @register_preference(ElsewhereJCP)
+    def _prefer_built_in(provider, requests):
+        return 1000  # above every external runtime, so all platforms behave the same
 
 
 def version():
