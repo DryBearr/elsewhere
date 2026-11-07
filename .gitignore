@@ -28,3 +28,6 @@ rustc-ice-*.txt
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Local Python packages for desktop development (yt-dlp)
+/vendor/
