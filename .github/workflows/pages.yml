@@ -1,0 +1,49 @@
+# Publishes site/ to GitHub Pages, with source.json built from the GitHub releases.
+# Runs after each successful Release, when site/ changes on main, or by hand.
+# (A separate workflow because Pages only accepts deploys from main by default, not from tags.)
+name: Pages
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+  push:
+    branches: [main]
+    paths: ["site/**", "scripts/source.py", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build source.json from the releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pages_url="https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[] | tojson' \
+            | python3 scripts/source.py "$pages_url" > site/source.json
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

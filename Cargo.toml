@@ -21,6 +21,10 @@ slint-build = "1.18"
 [target.'cfg(target_os = "android")'.dependencies]
 slint = { version = "1.18", features = ["backend-android-activity-06"] }
 
+# iOS draws with Skia on Metal (Slint's supported iOS renderer).
+[target.'cfg(target_os = "ios")'.dependencies]
+slint = { version = "1.18", features = ["renderer-skia"] }
+
 # Linux desktop only: load fontconfig at runtime, so builds need no fontconfig dev headers.
 # Keep the version in step with the fontique version Slint uses.
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -29,3 +33,17 @@ fontique = { version = "0.11", features = ["fontconfig-dlopen"] }
 [[test]]
 name = "ytdlp"
 required-features = ["ytdlp"]
+
+# Android package, built by `cargo apk build --release --lib`. versionName comes from
+# `version` above, and the release workflow checks that the git tag matches it.
+[package.metadata.android]
+package = "io.github.drybearr.elsewhere"
+apk_name = "Elsewhere"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.sdk]
+min_sdk_version = 26
+target_sdk_version = 35
+
+[package.metadata.android.application]
+label = "Elsewhere"
