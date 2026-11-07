@@ -57,15 +57,9 @@ def setup(paths):
     getpass.getpass = _no_input
     sys.stdin = io.StringIO()
 
-    if sys.platform == 'ios':
-        # iOS apps that start a process lock up or crash. Make it an ordinary error,
-        # so yt-dlp sees ffmpeg and JS runtimes as unavailable instead.
-        import subprocess
-
-        def _no_process(*args, **kwargs):
-            raise OSError('iOS apps cannot start other processes')
-
-        subprocess.Popen = _no_process
+    # iOS apps cannot start processes. Python (3.13+) already makes subprocess.Popen raise
+    # OSError there, so yt-dlp sees ffmpeg and JS runtimes as unavailable. Do not replace
+    # Popen: yt-dlp subclasses it.
 
     import yt_dlp as module
     import yt_dlp.options
