@@ -1,32 +1,18 @@
-import { Button, LineEdit, ListView } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 
 export component App inherits Window {
     title: "Elsewhere";
     preferred-width: 360px;
     preferred-height: 640px;
 
-    in property <[string]> notes;
-    callback add(string);
+    in property <[string]> categories;
 
     VerticalLayout {
         padding: 12px;
-        spacing: 8px;
-
-        input := LineEdit {
-            placeholder-text: "New note";
-        }
-
-        Button {
-            text: "Save";
-            clicked => {
-                root.add(input.text);
-                input.text = "";
-            }
-        }
 
         ListView {
-            for note in root.notes: Text {
-                text: note;
+            for name in root.categories: Text {
+                text: name;
             }
         }
     }
