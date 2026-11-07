@@ -4,3 +4,10 @@
 # Any Python 3.10+ works here; CI and the phone builds use 3.15. An environment
 # variable with the same name overrides this.
 PYO3_PYTHON = "/home/linuxbrew/.linuxbrew/bin/python3"
+
+# iOS: Python.framework sits in the app's Frameworks folder (the ytdlp feature).
+[target.aarch64-apple-ios]
+rustflags = ["-C", "link-arg=-Wl,-rpath,@executable_path/Frameworks"]
+
+[target.aarch64-apple-ios-sim]
+rustflags = ["-C", "link-arg=-Wl,-rpath,@executable_path/Frameworks"]

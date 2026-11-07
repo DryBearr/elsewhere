@@ -1,5 +1,7 @@
 # XcodeGen spec for the iOS app, following Slint's iOS guide.
-# Generate the Xcode project with `xcodegen` in this folder (needs a Mac).
+# Needs a Mac. First prepare Python and yt-dlp, then generate the Xcode project:
+#   python3 scripts/mobile_python.py ios     (from the repository root)
+#   cd ios && xcodegen
 # The release workflow sets MARKETING_VERSION and CURRENT_PROJECT_VERSION.
 name: Elsewhere
 options:
@@ -33,9 +35,33 @@ targets:
                 UISceneDelegateClassName: SlintWindowSceneDelegate
     sources: []
     scheme: {}
+    # Python, with yt-dlp in its site-packages, made by scripts/mobile_python.py.
+    dependencies:
+      - framework: ../target/ios/Python.xcframework
+        embed: true
     postCompileScripts:
       - name: Build Rust with cargo
         script: |
-          ./build_for_ios_with_cargo.bash elsewhere
+          # PyO3 links against the Python slice that matches this build.
+          if [ "$EFFECTIVE_PLATFORM_NAME" = "-iphonesimulator" ]; then
+            slice=ios-arm64_x86_64-simulator
+          else
+            slice=ios-arm64
+          fi
+          export PYO3_PYTHON=python3
+          export PYO3_CROSS_LIB_DIR="$PROJECT_DIR/../target/ios/Python.xcframework/$slice/lib-$ARCHS"
+          ./build_for_ios_with_cargo.bash elsewhere --features ytdlp
         outputFileLists:
           $TARGET_BUILD_DIR/$EXECUTABLE_PATH
+      # Python's official helper: copies the standard library and yt-dlp into
+      # Elsewhere.app/python, and turns each C module into a framework, as iOS requires.
+      - name: Install Python
+        basedOnDependencyAnalysis: false
+        script: |
+          set -e
+          source "$PROJECT_DIR/../target/ios/Python.xcframework/build/utils.sh"
+          # Unsigned CI builds sign the module frameworks ad hoc; SideStore signs them again.
+          if [ "$CODE_SIGNING_ALLOWED" = "NO" ]; then
+            EXPANDED_CODE_SIGN_IDENTITY="-"
+          fi
+          install_python ../target/ios/Python.xcframework

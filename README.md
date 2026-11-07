@@ -15,14 +15,23 @@ cargo run --features ytdlp                   # the app, with the "Try yt-dlp" bo
 
 `scripts/requirements.txt` pins yt-dlp. Bump it there to update yt-dlp everywhere.
 
-Android: the APK carries its own Python (the official CPython build for Android) and yt-dlp. `scripts/android_python.py` downloads and prepares them under `target/android/`, and the app unpacks the standard library and yt-dlp into its private storage on the first start after each install or update (`src/android.rs`). The Release workflow does this; by hand it is:
+Phones: both carry their own Python (the official CPython 3.15 builds from python.org) with yt-dlp in its site-packages. `scripts/mobile_python.py` downloads and trims them; the yt-dlp code is the same on every platform, and only `src/platform/` differs: where Python lives and the environment it needs.
 
-```sh
-python3 scripts/android_python.py
-PYO3_CROSS_LIB_DIR=$PWD/target/android/prefix/lib cargo apk build --release --lib --features ytdlp
-```
+- Android: the APK holds the standard library and yt-dlp as `assets/python.tar`; the app unpacks it into its private storage on the first start after each install or update.
 
-iOS builds do not include yt-dlp yet.
+  ```sh
+  python3 scripts/mobile_python.py android
+  PYO3_CROSS_LIB_DIR=$PWD/target/android/prefix/lib cargo apk build --release --lib --features ytdlp
+  ```
+
+- iOS: the Xcode build copies Python into `Elsewhere.app/python` and turns each C module into a framework, as iOS requires (see `ios/project.yml`).
+
+  ```sh
+  python3 scripts/mobile_python.py ios
+  cd ios && xcodegen
+  ```
+
+The Mobile workflow runs `tests/ytdlp.rs` on an Android emulator and an iOS simulator with that same Python, and starts the iOS app in the simulator to check that yt-dlp starts.
 
 PyO3 links against Homebrew's Python (see `.cargo/config.toml`); set `PYO3_PYTHON` to use another Python that ships `libpython3.x.so`.
 

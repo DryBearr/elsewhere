@@ -1,9 +1,13 @@
 //! Tests for src/ytdlp against the real yt-dlp, fully offline: a small HTTP server on
 //! 127.0.0.1 serves fake media files. Needs yt-dlp in vendor/python:
 //!
-//!     python3 -m pip install --target vendor/python yt-dlp
+//!     python3 -m pip install --target vendor/python -r scripts/requirements.txt
 //!
 //! Tests that reach real websites are marked #[ignore]: `cargo test --features ytdlp -- --ignored`.
+//!
+//! On the Android emulator and iOS simulator (.github/workflows/mobile.yml), the test
+//! binary runs with YTDLP_TEST_PYTHON_HOME set to the phone Python, which has yt-dlp in
+//! its site-packages.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -19,12 +23,21 @@ const SIZE: usize = 200_000;
 const SLOW_SIZE: usize = 1_000_000;
 
 fn ready() {
-    let setup = Setup {
-        python_home: None,
-        python_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/python")],
+    let setup = match std::env::var_os("YTDLP_TEST_PYTHON_HOME") {
+        Some(home) => Setup {
+            python_home: Some(PathBuf::from(home)),
+            python_paths: Vec::new(),
+        },
+        None => Setup {
+            python_home: None,
+            python_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/python")],
+        },
     };
-    ytdlp::init(&setup)
-        .expect("yt-dlp not found; run: python3 -m pip install --target vendor/python yt-dlp");
+    if let Err(err) = ytdlp::init(&setup) {
+        panic!(
+            "yt-dlp did not start ({err}); run: python3 -m pip install --target vendor/python -r scripts/requirements.txt"
+        );
+    }
 }
 
 /// A fresh, empty folder for one test.

@@ -1,0 +1,144 @@
+# Runs the yt-dlp tests (tests/ytdlp.rs) on an Android emulator and an iOS simulator,
+# with the same Python and yt-dlp the phone builds bundle (scripts/mobile_python.py).
+# The iOS job also starts the real app in the simulator and checks that yt-dlp starts.
+name: Mobile
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.15"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-emulator
+
+      - name: Prepare Python and yt-dlp for the emulator
+        run: python3 scripts/mobile_python.py android x86_64
+
+      - name: Build the tests for Android
+        run: |
+          rustup target add x86_64-linux-android
+          bin="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$bin/x86_64-linux-android26-clang"
+          export CC_x86_64_linux_android="$bin/x86_64-linux-android26-clang"
+          export AR_x86_64_linux_android="$bin/llvm-ar"
+          export PYO3_PYTHON=python3
+          export PYO3_CROSS_LIB_DIR="$PWD/target/android/prefix/lib"
+          cargo test --no-run --features ytdlp --target x86_64-linux-android --test ytdlp \
+            --message-format=json > build.json
+          python3 -c "import json, sys; print(next(m['executable'] for m in map(json.loads, open('build.json')) if m.get('reason') == 'compiler-artifact' and m['target']['name'] == 'ytdlp' and m.get('executable')))" > test-binary.txt
+          cp "$(cat test-binary.txt)" ytdlp-tests
+
+      - name: Enable KVM for the emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run the tests on the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          script: |
+            adb shell mkdir -p /data/local/tmp/elsewhere/python /data/local/tmp/elsewhere/lib /data/local/tmp/elsewhere/tmp
+            adb push target/android/assets/python.tar /data/local/tmp/elsewhere/
+            adb shell "cd /data/local/tmp/elsewhere/python && tar xf ../python.tar"
+            adb push target/android/libs/x86_64/. /data/local/tmp/elsewhere/lib/
+            adb push ytdlp-tests /data/local/tmp/elsewhere/
+            adb shell "cd /data/local/tmp/elsewhere && chmod 755 ytdlp-tests && HOME=/data/local/tmp/elsewhere TMPDIR=/data/local/tmp/elsewhere/tmp LD_LIBRARY_PATH=/data/local/tmp/elsewhere/lib YTDLP_TEST_PYTHON_HOME=/data/local/tmp/elsewhere/python ./ytdlp-tests --test-threads=4"
+
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.15"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-simulator
+
+      - name: Prepare Python and yt-dlp for iOS
+        run: python3 scripts/mobile_python.py ios
+
+      - name: Install iOS build tools
+        run: |
+          rustup target add aarch64-apple-ios-sim aarch64-apple-ios
+          brew install xcodegen
+
+      - name: Start a simulator
+        run: |
+          udid=$(xcrun simctl list devices available --json | python3 -c "import json, sys; devices = json.load(sys.stdin)['devices']; print(next(d['udid'] for runtime, found in devices.items() if 'iOS' in runtime for d in found if d['name'].startswith('iPhone')))")
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+
+      - name: Build the tests for the simulator
+        run: |
+          slice="$PWD/target/ios/Python.xcframework/ios-arm64_x86_64-simulator"
+          export PYO3_PYTHON=python3
+          export PYO3_CROSS_LIB_DIR="$slice/lib-arm64"
+          cargo test --no-run --features ytdlp --target aarch64-apple-ios-sim --test ytdlp \
+            --message-format=json > build.json
+          binary=$(python3 -c "import json, sys; print(next(m['executable'] for m in map(json.loads, open('build.json')) if m.get('reason') == 'compiler-artifact' and m['target']['name'] == 'ytdlp' and m.get('executable')))")
+          # Lay it out like the app: Frameworks/ next to the binary, and one Python home
+          # with the shared standard library plus this slice's C modules.
+          mkdir -p run/Frameworks run/python/lib
+          cp "$binary" run/ytdlp-tests
+          cp -R "$slice/Python.framework" run/Frameworks/
+          cp -R target/ios/Python.xcframework/lib/python3.15 run/python/lib/
+          cp -R "$slice/lib-arm64/python3.15/" run/python/lib/python3.15/
+          find run -name '*.so' -exec codesign --force --sign - {} \;
+          codesign --force --sign - run/Frameworks/Python.framework run/ytdlp-tests
+
+      - name: Run the tests in the simulator
+        run: |
+          SIMCTL_CHILD_YTDLP_TEST_PYTHON_HOME="$PWD/run/python" \
+            xcrun simctl spawn "$UDID" "$PWD/run/ytdlp-tests" --test-threads=4
+
+      - name: Build the app for the simulator
+        run: |
+          cd ios
+          xcodegen
+          xcodebuild build \
+            -project Elsewhere.xcodeproj \
+            -scheme Elsewhere \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/derived" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES
+
+      - name: Start the app and check that yt-dlp starts
+        run: |
+          app="$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator/Elsewhere.app"
+          ls "$app" "$app/python/lib" "$app/Frameworks" | head -40
+          xcrun simctl install "$UDID" "$app"
+          xcrun simctl launch --console-pty "$UDID" io.github.drybearr.elsewhere > app.log 2>&1 &
+          for _ in $(seq 180); do
+            grep -q "Elsewhere: yt-dlp" app.log && break
+            sleep 1
+          done
+          xcrun simctl terminate "$UDID" io.github.drybearr.elsewhere || true
+          cat app.log
+          grep -q "Elsewhere: yt-dlp .* is ready" app.log

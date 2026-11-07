@@ -1,9 +1,9 @@
 #[cfg(feature = "ytdlp")]
 pub mod ytdlp;
 
-#[cfg(all(target_os = "android", feature = "ytdlp"))]
-mod android;
 mod db;
+#[cfg(feature = "ytdlp")]
+mod platform;
 
 use std::path::PathBuf;
 
@@ -13,6 +13,10 @@ use slint::{ModelRc, SharedString, VecModel};
 slint::include_modules!();
 
 pub fn run(db_path: PathBuf) {
+    // Android sets it in android_main instead, before Slint starts its threads.
+    #[cfg(all(feature = "ytdlp", not(target_os = "android")))]
+    platform::set_env();
+
     let db = db::open(&db_path).unwrap();
 
     let app = App::new().unwrap();
@@ -37,12 +41,14 @@ fn start_ytdlp(app: &App) {
     app.set_ytdlp_status("Starting yt-dlp…".into());
     let weak = app.as_weak();
     std::thread::spawn(move || {
-        let started =
-            python_setup().and_then(|setup| ytdlp::init(&setup).map_err(|err| err.to_string()));
+        let started = platform::python_setup()
+            .and_then(|setup| ytdlp::init(&setup).map_err(|err| err.to_string()));
         let (status, ready) = match started {
             Ok(version) => (format!("yt-dlp {version} is ready."), true),
             Err(err) => (format!("yt-dlp could not start: {err}"), false),
         };
+        // The iOS simulator check in .github/workflows/mobile.yml looks for this line.
+        eprintln!("Elsewhere: {status}");
         let _ = weak.upgrade_in_event_loop(move |app| {
             app.set_ytdlp_status(status.into());
             app.set_ytdlp_ready(ready);
@@ -102,46 +108,14 @@ fn lookup(link: &str) -> String {
     }
 }
 
-/// The Android app handle, kept so a worker thread can unpack Python from the APK.
-#[cfg(all(target_os = "android", feature = "ytdlp"))]
-static ANDROID_APP: std::sync::OnceLock<slint::android::AndroidApp> = std::sync::OnceLock::new();
-
-/// Android: Python and yt-dlp come unpacked from the APK.
-#[cfg(all(target_os = "android", feature = "ytdlp"))]
-fn python_setup() -> Result<ytdlp::Setup, String> {
-    let app = ANDROID_APP
-        .get()
-        .ok_or("the Android app handle is missing")?;
-    let home =
-        android::python_home(app).map_err(|err| format!("could not unpack Python: {err}"))?;
-    Ok(ytdlp::Setup {
-        python_home: Some(home),
-        python_paths: Vec::new(),
-    })
-}
-
-/// Desktop: the Python the app links against, plus yt-dlp from vendor/python (see README).
-#[cfg(all(not(target_os = "android"), feature = "ytdlp"))]
-fn python_setup() -> Result<ytdlp::Setup, String> {
-    let vendor = PathBuf::from("vendor/python");
-    Ok(ytdlp::Setup {
-        python_home: None,
-        python_paths: if vendor.is_dir() {
-            vec![vendor]
-        } else {
-            Vec::new()
-        },
-    })
-}
-
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
     let dir = app.internal_data_path().unwrap();
     #[cfg(feature = "ytdlp")]
     {
-        android::set_env(&dir);
-        let _ = ANDROID_APP.set(app.clone());
+        platform::keep_app(&app);
+        platform::set_env();
     }
     slint::android::init(app).unwrap();
     run(dir.join("elsewhere.db"));

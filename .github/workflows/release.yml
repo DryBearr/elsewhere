@@ -63,7 +63,7 @@ jobs:
           cargo install cargo-apk --locked
 
       - name: Bundle Python and yt-dlp
-        run: python3 scripts/android_python.py
+        run: python3 scripts/mobile_python.py android
 
       - name: Build APK
         env:
@@ -89,10 +89,17 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.15"
+
       - name: Install iOS build tools
         run: |
           rustup target add aarch64-apple-ios
           brew install xcodegen
+
+      - name: Bundle Python and yt-dlp
+        run: python3 scripts/mobile_python.py ios
 
       - name: Build unsigned IPA
         env:

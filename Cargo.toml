@@ -36,13 +36,13 @@ required-features = ["ytdlp"]
 
 # Android package. versionName comes from `version` above, and the release workflow
 # checks that the git tag matches it. Build it with Python and yt-dlp inside:
-#   python3 scripts/android_python.py
+#   python3 scripts/mobile_python.py android
 #   PYO3_CROSS_LIB_DIR=$PWD/target/android/prefix/lib cargo apk build --release --lib --features ytdlp
 [package.metadata.android]
 package = "io.github.drybearr.elsewhere"
 apk_name = "Elsewhere"
 build_targets = ["aarch64-linux-android"]
-# Made by scripts/android_python.py: the Python standard library and yt-dlp, and libpython.
+# Made by scripts/mobile_python.py: the Python standard library and yt-dlp, and libpython.
 assets = "target/android/assets"
 runtime_libs = "target/android/libs"
 

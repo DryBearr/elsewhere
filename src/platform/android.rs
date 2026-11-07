@@ -1,18 +1,32 @@
-//! Android: unpacks the Python that ships inside the APK (assets/python.tar, made by
-//! scripts/android_python.py) into the app's private storage, where yt-dlp can run it.
+//! Android: the APK carries Python and yt-dlp as assets/python.tar (made by
+//! scripts/mobile_python.py). The first start after an install or update unpacks it into
+//! the app's private storage; later starts find it there.
 
 use std::fs::{self, File};
 use std::io::{self, BufReader, ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::OnceLock;
 
 use slint::android::AndroidApp;
+
+use crate::ytdlp::Setup;
+
+static APP: OnceLock<AndroidApp> = OnceLock::new();
+
+/// Android only: keeps the app handle, which set_env and python_setup need. Call it first
+/// thing in android_main.
+pub fn keep_app(app: &AndroidApp) {
+    let _ = APP.set(app.clone());
+}
 
 /// Sets the environment Python and yt-dlp need. Android sets neither TMPDIR (before
 /// Android 13) nor a usable HOME, so temporary files and caches go into the app's storage.
 /// The PYTHON* values are the ones ytdlp::init would set; with them in place, init (which
 /// runs later, on a worker thread) does not touch the environment.
-/// Call it first thing in android_main, before other threads start.
-pub fn set_env(data: &Path) {
+pub fn set_env() {
+    let Some(data) = APP.get().and_then(|app| app.internal_data_path()) else {
+        return;
+    };
     let tmp = data.join("tmp");
     let cache = data.join("cache");
     let _ = fs::create_dir_all(&tmp);
@@ -20,32 +34,38 @@ pub fn set_env(data: &Path) {
     // SAFETY: runs at the very start of android_main, before Slint or anything else
     // in this process starts threads that could read the environment.
     unsafe {
-        std::env::set_var("HOME", data);
+        std::env::set_var("HOME", &data);
         std::env::set_var("TMPDIR", &tmp);
         std::env::set_var("XDG_CACHE_HOME", &cache);
-        std::env::set_var("PYTHONHOME", python_dir(data));
+        std::env::set_var("PYTHONHOME", python_dir(&data));
         std::env::set_var("PYTHONUTF8", "1");
         std::env::set_var("PYTHONNOUSERSITE", "1");
     }
 }
 
-/// Where the Python home goes inside the app's storage.
-fn python_dir(data: &Path) -> PathBuf {
-    data.join("python")
-}
-
-/// Returns the Python home, unpacking python.tar from the APK first when it is not there
-/// yet. The archive starts with a stamp; a matching stamp on disk means nothing to do, so
-/// only the first start after an install or update pays for unpacking.
-pub fn python_home(app: &AndroidApp) -> io::Result<PathBuf> {
+/// Unpacks python.tar from the APK when this version is not unpacked yet, and returns
+/// where Python is. The archive starts with a stamp; a matching stamp on disk means
+/// nothing to do.
+pub fn python_setup() -> Result<Setup, String> {
+    let app = APP.get().ok_or("keep_app was not called")?;
     let data = app
         .internal_data_path()
-        .ok_or_else(|| io::Error::other("Android gave no app storage folder"))?;
+        .ok_or("Android gave no app storage folder")?;
     let asset = app
         .asset_manager()
         .open(c"python.tar")
-        .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "python.tar is missing from the APK"))?;
-    unpack(BufReader::new(asset), &data)
+        .ok_or("python.tar is missing from the APK")?;
+    let home = unpack(BufReader::new(asset), &data)
+        .map_err(|err| format!("could not unpack Python: {err}"))?;
+    Ok(Setup {
+        python_home: Some(home),
+        python_paths: Vec::new(),
+    })
+}
+
+/// Where the Python home goes inside the app's storage.
+fn python_dir(data: &Path) -> PathBuf {
+    data.join("python")
 }
 
 /// Unpacks a python.tar stream into `<data>/python` unless the same stamp is already there.
