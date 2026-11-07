@@ -404,6 +404,23 @@ fn real_site_download() {
     assert!(size > 100_000, "{size} bytes");
 }
 
+#[test]
+#[ignore = "reaches youtube.com"]
+fn youtube_challenge_is_solved() {
+    ready();
+    // A test case from yt-dlp's own suite (test/test_jsc/test_ejs_integration.py). The
+    // player script is a static file, which YouTube serves even where it blocks videos.
+    let player = "https://www.youtube.com/s/player/631d3938/player_ias.vflset/en_US/base.js";
+    let started = Instant::now();
+    let answer = ytdlp::solve_youtube_challenge(player, "n", "KBx1qz7jMhxELa8c").unwrap();
+    assert_eq!(answer, "ttPvh7WIptsgSw");
+    println!("solved in {:?}", started.elapsed());
+    assert!(matches!(
+        ytdlp::solve_youtube_challenge(player, "x", "y"),
+        Err(Error::BadArgs(_))
+    ));
+}
+
 /// True when the runner put ffmpeg on PATH (the Android emulator run does).
 fn has_ffmpeg() -> bool {
     std::env::var_os("YTDLP_TEST_FFMPEG").is_some_and(|value| value == "1")

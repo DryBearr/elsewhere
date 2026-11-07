@@ -38,6 +38,9 @@ jobs:
       - name: Test
         run: cargo test --features ytdlp
 
+      - name: YouTube's JavaScript challenge, solved by the built-in engine
+        run: cargo test --features ytdlp --test ytdlp -- --ignored youtube_challenge --nocapture
+
       # YouTube often blocks CI machines, so a failure here is a warning, not an error.
       - name: Real YouTube tests
         continue-on-error: true

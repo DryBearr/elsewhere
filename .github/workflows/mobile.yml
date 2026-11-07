@@ -107,6 +107,7 @@ jobs:
             adb push ytdlp-tests run-tests.sh /data/local/tmp/elsewhere/
             adb shell chmod 755 /data/local/tmp/elsewhere/ytdlp-tests /data/local/tmp/elsewhere/bin/ffmpeg /data/local/tmp/elsewhere/bin/ffprobe
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh --test-threads=4
+            adb shell sh /data/local/tmp/elsewhere/run-tests.sh --ignored youtube_challenge --nocapture
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh --ignored real_site || echo "::warning::Real YouTube tests failed on the Android emulator (YouTube often blocks CI machines)"
             bash check-app.sh
 
@@ -158,8 +159,11 @@ jobs:
 
       - name: Run the tests in the simulator
         run: |
-          SIMCTL_CHILD_YTDLP_TEST_PYTHON_HOME="$PWD/run/python" \
-            xcrun simctl spawn "$UDID" "$PWD/run/ytdlp-tests" --test-threads=4
+          export SIMCTL_CHILD_YTDLP_TEST_PYTHON_HOME="$PWD/run/python"
+          xcrun simctl spawn "$UDID" "$PWD/run/ytdlp-tests" --test-threads=4
+          # YouTube's JavaScript challenge, solved by the built-in engine (a static file
+          # from youtube.com, which is not blocked like videos are).
+          xcrun simctl spawn "$UDID" "$PWD/run/ytdlp-tests" --ignored youtube_challenge --nocapture
 
       # YouTube often blocks CI machines, so a failure here is a warning, not an error.
       - name: Run the real YouTube tests in the simulator

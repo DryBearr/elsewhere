@@ -187,6 +187,28 @@ where
     Ok(Done { files, json })
 }
 
+/// Checks YouTube support on this device: solves one of YouTube's JavaScript challenges
+/// with the built-in engine, the way yt-dlp does while extracting. `kind` is `"n"` or
+/// `"sig"`; `player_url` is a YouTube player script, downloaded once and then cached.
+/// Returns the answer. Blocks like [`info`].
+pub fn solve_youtube_challenge(
+    player_url: &str,
+    kind: &str,
+    challenge: &str,
+) -> Result<String, Error> {
+    let (_, answer) = python::run(
+        "solve_challenge",
+        player_url,
+        &[kind, challenge],
+        |_| {},
+        &Cancel::new(),
+    )?;
+    answer.ok_or_else(|| Error::YtDlp {
+        kind: "NoAnswer".to_owned(),
+        message: "the challenge solver gave no answer".to_owned(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

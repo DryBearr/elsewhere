@@ -1,6 +1,6 @@
 """Bridge between Rust (src/ytdlp/python.rs) and yt-dlp.
 
-Rust calls only setup(), version(), info() and download(). Everything yt-dlp prints,
+Rust calls only setup(), version(), info(), download() and solve_challenge(). Everything yt-dlp prints,
 logs or reports goes through the `emit` callback, so nothing touches stdout, stderr
 or stdin. Errors leave this module as one of three exceptions: BadArgs, Cancelled
 or Failure.
@@ -18,6 +18,7 @@ import sys
 yt_dlp = None
 DownloadCancelled = None
 DownloadError = None
+ElsewhereJCP = None  # the built-in JavaScript challenge provider, set by _add_js_engine()
 
 # Flags that only yt-dlp's command-line program acts on. parse_options() accepts them,
 # but the library would silently ignore them, so they are rejected instead.
@@ -97,7 +98,7 @@ def _add_js_engine(run_js):
     except ImportError:
         return  # a yt-dlp without challenge providers; nothing to add
 
-    class ElsewhereJCP(EJSBaseJCP):
+    class _ElsewhereJCP(EJSBaseJCP):
         PROVIDER_NAME = 'elsewhere'
         JS_RUNTIME_NAME = 'built-in QuickJS'
         PROVIDER_VERSION = '1.0.0'
@@ -113,18 +114,57 @@ def _add_js_engine(run_js):
             except RuntimeError as err:
                 raise JsChallengeProviderError(f'JavaScript error: {err}') from None
 
+    global ElsewhereJCP
     try:
-        register_provider(ElsewhereJCP)
+        register_provider(_ElsewhereJCP)
     except AssertionError:
         return  # already registered by an earlier setup()
+    ElsewhereJCP = _ElsewhereJCP
 
-    @register_preference(ElsewhereJCP)
+    @register_preference(_ElsewhereJCP)
     def _prefer_built_in(provider, requests):
         return 1000  # above every external runtime, so all platforms behave the same
 
 
 def version():
     return yt_dlp.version.__version__
+
+
+def solve_challenge(player_url, args, emit, cancelled):
+    """Solves one YouTube JavaScript challenge with the built-in engine, the way yt-dlp does
+    while extracting, to check YouTube support. args are [kind ('n' or 'sig'), challenge].
+    Downloads the player script (yt-dlp caches it). Returns ([], answer)."""
+    _check(cancelled)
+    if len(args) != 2 or args[0] not in ('n', 'sig'):
+        raise BadArgs('expected [kind, challenge], with kind "n" or "sig"')
+    if ElsewhereJCP is None:
+        raise Failure('NotSupported', 'this yt-dlp cannot solve JavaScript challenges')
+    from yt_dlp.extractor.youtube.jsc.provider import (
+        JsChallengeRequest,
+        JsChallengeType,
+        NChallengeInput,
+        SigChallengeInput,
+    )
+    from yt_dlp.extractor.youtube.pot._director import YoutubeIEContentProviderLogger
+
+    kind, challenge = args
+    if kind == 'n':
+        request = JsChallengeRequest(JsChallengeType.N, NChallengeInput(player_url, [challenge]), 'player')
+    else:
+        request = JsChallengeRequest(JsChallengeType.SIG, SigChallengeInput(player_url, [challenge]), 'player')
+    try:
+        with yt_dlp.YoutubeDL({'logger': _Logger(emit, cancelled), 'noprogress': True}) as ydl:
+            ie = ydl.get_info_extractor('Youtube')
+            provider = ElsewhereJCP(ie, YoutubeIEContentProviderLogger(ie, 'jsc:elsewhere'), {})
+            response = next(iter(provider.bulk_solve([request])))
+    except (BadArgs, Cancelled):
+        raise
+    except Exception as err:
+        _check(cancelled)
+        raise Failure(type(err).__name__, _clean(str(err))) from None
+    if response.error is not None:
+        raise Failure(type(response.error).__name__, _clean(str(response.error)))
+    return [], response.response.output.results[challenge]
 
 
 def info(url, args, emit, cancelled):
