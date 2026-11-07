@@ -1,0 +1,5 @@
+[env]
+# Python that PyO3 builds against for the `ytdlp` feature. It needs libpython3.x.so,
+# which Homebrew's Python has and Bazzite's system Python does not. An environment
+# variable with the same name overrides this.
+PYO3_PYTHON = "/home/linuxbrew/.linuxbrew/bin/python3"

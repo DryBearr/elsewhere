@@ -1,3 +1,6 @@
+#[cfg(feature = "ytdlp")]
+pub mod ytdlp;
+
 use std::path::PathBuf;
 
 use rusqlite::Connection;
