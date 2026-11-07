@@ -1,6 +1,6 @@
 # Runs the yt-dlp tests (tests/ytdlp.rs) on an Android emulator and an iOS simulator,
-# with the same Python and yt-dlp the phone builds bundle (scripts/mobile_python.py).
-# The iOS job also starts the real app in the simulator and checks that yt-dlp starts.
+# with the same Python, yt-dlp and (on Android) ffmpeg the phone builds bundle. Both jobs
+# also start the real app and check that yt-dlp starts.
 name: Mobile
 
 on:
@@ -29,6 +29,14 @@ jobs:
       - name: Prepare Python and yt-dlp for the emulator
         run: python3 scripts/mobile_python.py android x86_64
 
+      - uses: actions/cache@v4
+        with:
+          path: target/ffmpeg/x86_64
+          key: ffmpeg-x86_64-${{ hashFiles('scripts/android_ffmpeg.sh') }}
+
+      - name: Build ffmpeg for the emulator
+        run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_ffmpeg.sh x86_64
+
       - name: Build the tests for Android
         run: |
           rustup target add x86_64-linux-android
@@ -42,6 +50,38 @@ jobs:
             --message-format=json > build.json
           python3 -c "import json, sys; print(next(m['executable'] for m in map(json.loads, open('build.json')) if m.get('reason') == 'compiler-artifact' and m['target']['name'] == 'ytdlp' and m.get('executable')))" > test-binary.txt
           cp "$(cat test-binary.txt)" ytdlp-tests
+          # Runs the tests on the emulator with the phone Python, and ffmpeg on PATH.
+          cat > run-tests.sh <<'SCRIPT'
+          cd /data/local/tmp/elsewhere
+          export HOME=$PWD TMPDIR=$PWD/tmp LD_LIBRARY_PATH=$PWD/lib PATH=$PWD/bin:$PATH
+          export YTDLP_TEST_PYTHON_HOME=$PWD/python YTDLP_TEST_FFMPEG=1
+          exec ./ytdlp-tests "$@"
+          SCRIPT
+
+      - name: Build the app for the emulator
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          cargo install cargo-apk --locked
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME"
+          export PYO3_PYTHON=python3
+          export PYO3_CROSS_LIB_DIR="$PWD/target/android/prefix/lib"
+          cargo apk build --lib --target x86_64-linux-android --features ytdlp
+          cp target/debug/apk/Elsewhere.apk Elsewhere-x86_64.apk
+          # Starts the app, waits for its yt-dlp status line in logcat, then runs ffmpeg
+          # the way the app does (as the app, from the app's folder).
+          cat > check-app.sh <<'SCRIPT'
+          set -e
+          adb install -r Elsewhere-x86_64.apk
+          adb logcat -c
+          adb shell am start -W -n io.github.drybearr.elsewhere/android.app.NativeActivity
+          for _ in $(seq 240); do
+            adb logcat -d -s Elsewhere:I | grep -q "yt-dlp" && break
+            sleep 1
+          done
+          adb logcat -d -s Elsewhere:I
+          adb logcat -d -s Elsewhere:I | grep -q "yt-dlp .* is ready"
+          adb shell run-as io.github.drybearr.elsewhere files/bin/ffmpeg -hide_banner -version | head -1
+          SCRIPT
 
       - name: Enable KVM for the emulator
         run: |
@@ -49,7 +89,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run the tests on the emulator
+      - name: Run the tests and the app on the emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -58,13 +98,17 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: |
-            adb shell mkdir -p /data/local/tmp/elsewhere/python /data/local/tmp/elsewhere/lib /data/local/tmp/elsewhere/tmp
+            adb shell mkdir -p /data/local/tmp/elsewhere/python /data/local/tmp/elsewhere/lib /data/local/tmp/elsewhere/bin /data/local/tmp/elsewhere/tmp
             adb push target/android/assets/python.tar /data/local/tmp/elsewhere/
             adb shell "cd /data/local/tmp/elsewhere/python && tar xf ../python.tar"
             adb push target/android/libs/x86_64/. /data/local/tmp/elsewhere/lib/
-            adb push ytdlp-tests /data/local/tmp/elsewhere/
-            adb shell "cd /data/local/tmp/elsewhere && chmod 755 ytdlp-tests && HOME=/data/local/tmp/elsewhere TMPDIR=/data/local/tmp/elsewhere/tmp LD_LIBRARY_PATH=/data/local/tmp/elsewhere/lib YTDLP_TEST_PYTHON_HOME=/data/local/tmp/elsewhere/python ./ytdlp-tests --test-threads=4"
-            adb shell "cd /data/local/tmp/elsewhere && HOME=/data/local/tmp/elsewhere TMPDIR=/data/local/tmp/elsewhere/tmp LD_LIBRARY_PATH=/data/local/tmp/elsewhere/lib YTDLP_TEST_PYTHON_HOME=/data/local/tmp/elsewhere/python ./ytdlp-tests --ignored real_site" || echo "::warning::Real YouTube tests failed on the Android emulator (YouTube often blocks CI machines)"
+            adb push target/android/libs/x86_64/libffmpeg.so /data/local/tmp/elsewhere/bin/ffmpeg
+            adb push target/android/libs/x86_64/libffprobe.so /data/local/tmp/elsewhere/bin/ffprobe
+            adb push ytdlp-tests run-tests.sh /data/local/tmp/elsewhere/
+            adb shell chmod 755 /data/local/tmp/elsewhere/ytdlp-tests /data/local/tmp/elsewhere/bin/ffmpeg /data/local/tmp/elsewhere/bin/ffprobe
+            adb shell sh /data/local/tmp/elsewhere/run-tests.sh --test-threads=4
+            adb shell sh /data/local/tmp/elsewhere/run-tests.sh --ignored real_site || echo "::warning::Real YouTube tests failed on the Android emulator (YouTube often blocks CI machines)"
+            bash check-app.sh
 
   ios:
     runs-on: macos-latest

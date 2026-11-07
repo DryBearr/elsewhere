@@ -38,8 +38,9 @@ name = "ytdlp"
 required-features = ["ytdlp"]
 
 # Android package. versionName comes from `version` above, and the release workflow
-# checks that the git tag matches it. Build it with Python and yt-dlp inside:
+# checks that the git tag matches it. Build it with Python, yt-dlp and ffmpeg inside:
 #   python3 scripts/mobile_python.py android
+#   scripts/android_ffmpeg.sh
 #   PYO3_CROSS_LIB_DIR=$PWD/target/android/prefix/lib cargo apk build --release --lib --features ytdlp
 [package.metadata.android]
 package = "io.github.drybearr.elsewhere"
@@ -59,3 +60,6 @@ target_sdk_version = 35
 
 [package.metadata.android.application]
 label = "Elsewhere"
+# Unpack native libraries to disk: ffmpeg and ffprobe ship as libffmpeg.so and
+# libffprobe.so and are run from there (src/platform/android.rs).
+extract_native_libs = true

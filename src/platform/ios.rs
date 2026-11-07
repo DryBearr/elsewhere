@@ -41,3 +41,8 @@ pub fn python_setup() -> Result<Setup, String> {
 fn python_dir() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("python"))
 }
+
+/// Writes a line to stderr (the Xcode console, or `simctl launch --console-pty`).
+pub fn log(message: &str) {
+    eprintln!("Elsewhere: {message}");
+}

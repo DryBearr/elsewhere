@@ -7,7 +7,7 @@
 //!
 //! On the Android emulator and iOS simulator (.github/workflows/mobile.yml), the test
 //! binary runs with YTDLP_TEST_PYTHON_HOME set to the phone Python, which has yt-dlp in
-//! its site-packages.
+//! its site-packages. YTDLP_TEST_FFMPEG=1 says ffmpeg is on PATH, so the ffmpeg tests run.
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -395,6 +395,52 @@ fn real_site_download() {
     let done = ytdlp::download(
         "https://www.youtube.com/watch?v=jNQXAC9IVRw",
         &["-P", dir.to_str().unwrap(), "-f", "b"],
+        |_| {},
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(done.files.len(), 1, "{:?}", done.files);
+    let size = fs::metadata(&done.files[0]).unwrap().len();
+    assert!(size > 100_000, "{size} bytes");
+}
+
+/// True when the runner put ffmpeg on PATH (the Android emulator run does).
+fn has_ffmpeg() -> bool {
+    std::env::var_os("YTDLP_TEST_FFMPEG").is_some_and(|value| value == "1")
+}
+
+#[test]
+fn ffmpeg_is_found_and_runs() {
+    if !has_ffmpeg() {
+        return;
+    }
+    ready();
+    let (events, on_event) = recorder();
+    ytdlp::info(&url("/video.mp4"), &["-v"], on_event, &Cancel::new()).unwrap();
+    let events = events.lock().unwrap();
+    let versions = events.iter().find_map(|event| match event {
+        Event::Log { message, .. } if message.contains("exe versions") => Some(message.clone()),
+        _ => None,
+    });
+    let versions = versions.expect("yt-dlp -v always logs the programs it found");
+    assert!(
+        versions.contains("ffmpeg") && versions.contains("ffprobe"),
+        "{versions}"
+    );
+}
+
+#[test]
+#[ignore = "reaches youtube.com"]
+fn real_site_merge() {
+    if !has_ffmpeg() {
+        return;
+    }
+    ready();
+    let dir = folder("youtube-merge");
+    // Separate video and audio streams, merged by ffmpeg into one file.
+    let done = ytdlp::download(
+        "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        &["-P", dir.to_str().unwrap(), "-f", "bv*[height<=240]+ba"],
         |_| {},
         &Cancel::new(),
     )

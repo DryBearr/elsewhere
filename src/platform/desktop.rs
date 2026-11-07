@@ -19,3 +19,8 @@ pub fn python_setup() -> Result<Setup, String> {
         },
     })
 }
+
+/// Writes a line to stderr (the Xcode console, or `simctl launch --console-pty`).
+pub fn log(message: &str) {
+    eprintln!("Elsewhere: {message}");
+}

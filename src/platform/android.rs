@@ -1,7 +1,9 @@
 //! Android: the APK carries Python and yt-dlp as assets/python.tar (made by
 //! scripts/mobile_python.py). The first start after an install or update unpacks it into
-//! the app's private storage; later starts find it there.
+//! the app's private storage; later starts find it there. ffmpeg and ffprobe ship as
+//! native libraries (scripts/android_ffmpeg.sh) and are put on PATH for yt-dlp.
 
+use std::ffi::{CString, c_char, c_int};
 use std::fs::{self, File};
 use std::io::{self, BufReader, ErrorKind, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -31,16 +33,69 @@ pub fn set_env() {
     let cache = data.join("cache");
     let _ = fs::create_dir_all(&tmp);
     let _ = fs::create_dir_all(&cache);
+    let path = match (link_programs(&data), std::env::var_os("PATH")) {
+        (Some(bin), Some(path)) => std::env::join_paths([bin, PathBuf::from(path)]).ok(),
+        (Some(bin), None) => Some(bin.into_os_string()),
+        (None, _) => None,
+    };
     // SAFETY: runs at the very start of android_main, before Slint or anything else
     // in this process starts threads that could read the environment.
     unsafe {
         std::env::set_var("HOME", &data);
         std::env::set_var("TMPDIR", &tmp);
         std::env::set_var("XDG_CACHE_HOME", &cache);
+        if let Some(path) = path {
+            std::env::set_var("PATH", path);
+        }
         std::env::set_var("PYTHONHOME", python_dir(&data));
         std::env::set_var("PYTHONUTF8", "1");
         std::env::set_var("PYTHONNOUSERSITE", "1");
     }
+}
+
+/// Android runs app programs only from the folder it unpacks native libraries into, so
+/// ffmpeg and ffprobe ship there as libffmpeg.so and libffprobe.so. This makes links
+/// named ffmpeg and ffprobe in `<data>/bin` and returns that folder, or None when the
+/// programs are missing.
+fn link_programs(data: &Path) -> Option<PathBuf> {
+    let libs = native_lib_dir()?;
+    let bin = data.join("bin");
+    fs::create_dir_all(&bin).ok()?;
+    let mut linked = false;
+    for name in ["ffmpeg", "ffprobe"] {
+        let program = libs.join(format!("lib{name}.so"));
+        let link = bin.join(name);
+        // The folder moves with every app update, so always make the link again.
+        let _ = fs::remove_file(&link);
+        if program.is_file() && std::os::unix::fs::symlink(&program, &link).is_ok() {
+            linked = true;
+        }
+    }
+    linked.then_some(bin)
+}
+
+/// The folder holding this app's native libraries: the one libelsewhere.so was loaded
+/// from, as listed in /proc/self/maps.
+fn native_lib_dir() -> Option<PathBuf> {
+    let maps = fs::read_to_string("/proc/self/maps").ok()?;
+    let library = maps
+        .lines()
+        .filter_map(|line| line.split_whitespace().nth(5))
+        .find(|path| path.ends_with("/libelsewhere.so"))?;
+    Some(Path::new(library).parent()?.to_path_buf())
+}
+
+#[link(name = "log")]
+unsafe extern "C" {
+    fn __android_log_write(priority: c_int, tag: *const c_char, text: *const c_char) -> c_int;
+}
+
+/// Writes a line to logcat with the tag Elsewhere (`adb logcat -s Elsewhere`).
+pub fn log(message: &str) {
+    const INFO: c_int = 4;
+    let text = CString::new(message.replace('\0', " ")).unwrap_or_default();
+    // SAFETY: both strings are NUL-terminated and live through the call.
+    unsafe { __android_log_write(INFO, c"Elsewhere".as_ptr(), text.as_ptr()) };
 }
 
 /// Unpacks python.tar from the APK when this version is not unpacked yet, and returns

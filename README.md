@@ -17,21 +17,24 @@ cargo run --features ytdlp                   # the app, with the "Try yt-dlp" bo
 
 Phones: both carry their own Python (the official CPython 3.15 builds from python.org) with yt-dlp in its site-packages. `scripts/mobile_python.py` downloads and trims them; the yt-dlp code is the same on every platform, and only `src/platform/` differs: where Python lives and the environment it needs.
 
-- Android: the APK holds the standard library and yt-dlp as `assets/python.tar`; the app unpacks it into its private storage on the first start after each install or update.
+- Android: the APK holds the standard library and yt-dlp as `assets/python.tar`; the app unpacks it into its private storage on the first start after each install or update. It also carries a small ffmpeg and ffprobe (`scripts/android_ffmpeg.sh`, copy-only, LGPL) so yt-dlp can merge YouTube's separate video and audio.
 
   ```sh
   python3 scripts/mobile_python.py android
+  scripts/android_ffmpeg.sh
   PYO3_CROSS_LIB_DIR=$PWD/target/android/prefix/lib cargo apk build --release --lib --features ytdlp
   ```
 
-- iOS: the Xcode build copies Python into `Elsewhere.app/python` and turns each C module into a framework, as iOS requires (see `ios/project.yml`).
+- iOS: the Xcode build copies Python into `Elsewhere.app/python` and turns each C module into a framework, as iOS requires (see `ios/project.yml`). iOS apps cannot run other programs, so there is no ffmpeg; yt-dlp picks formats that need no merging.
 
   ```sh
   python3 scripts/mobile_python.py ios
   cd ios && xcodegen
   ```
 
-The Mobile workflow runs `tests/ytdlp.rs` on an Android emulator and an iOS simulator with that same Python, and starts the iOS app in the simulator to check that yt-dlp starts.
+YouTube: yt-dlp has to solve JavaScript challenges. A QuickJS engine is compiled into the app (`third_party/quickjs`, `src/ytdlp/js.rs`), so this works on every platform without Deno or Node.
+
+The Mobile workflow runs `tests/ytdlp.rs` on an Android emulator and an iOS simulator with that same Python, and starts the real app on both to check that yt-dlp starts.
 
 PyO3 links against Homebrew's Python (see `.cargo/config.toml`); set `PYO3_PYTHON` to use another Python that ships `libpython3.x.so`.
 

@@ -47,8 +47,8 @@ fn start_ytdlp(app: &App) {
             Ok(version) => (format!("yt-dlp {version} is ready."), true),
             Err(err) => (format!("yt-dlp could not start: {err}"), false),
         };
-        // The iOS simulator check in .github/workflows/mobile.yml looks for this line.
-        eprintln!("Elsewhere: {status}");
+        // The emulator and simulator checks in .github/workflows/mobile.yml look for this.
+        platform::log(&status);
         let _ = weak.upgrade_in_event_loop(move |app| {
             app.set_ytdlp_status(status.into());
             app.set_ytdlp_ready(ready);
