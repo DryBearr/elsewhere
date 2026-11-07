@@ -25,7 +25,7 @@ jobs:
         run: |
           echo "PYO3_PYTHON=$(which python)" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$pythonLocation/lib" >> "$GITHUB_ENV"
-          python -m pip install --target vendor/python yt-dlp
+          python -m pip install --target vendor/python -r scripts/requirements.txt
 
       - uses: Swatinem/rust-cache@v2
 

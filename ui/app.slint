@@ -1,4 +1,4 @@
-import { ListView } from "std-widgets.slint";
+import { Button, LineEdit, ListView } from "std-widgets.slint";
 
 export component App inherits Window {
     title: "Elsewhere";
@@ -7,8 +7,52 @@ export component App inherits Window {
 
     in property <[string]> categories;
 
+    // "Try yt-dlp": paste a link, get its title. Shows that yt-dlp works on this device.
+    in property <string> ytdlp-status;
+    in property <bool> ytdlp-ready;
+    in property <bool> ytdlp-busy;
+    in property <string> ytdlp-result;
+    callback ytdlp-info(string);
+
     VerticalLayout {
-        padding: 12px;
+        // Keep clear of the status bar, notch and gesture bar on phones.
+        padding-top: max(12px, root.safe-area-insets.top);
+        padding-bottom: max(12px, root.safe-area-insets.bottom);
+        padding-left: max(12px, root.safe-area-insets.left);
+        padding-right: max(12px, root.safe-area-insets.right);
+        spacing: 8px;
+
+        Text {
+            text: root.ytdlp-status;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+
+            link := LineEdit {
+                placeholder-text: "Paste a video link";
+                enabled: root.ytdlp-ready;
+                accepted => {
+                    if (root.ytdlp-ready && !root.ytdlp-busy && self.text != "") {
+                        root.ytdlp-info(self.text);
+                    }
+                }
+            }
+
+            Button {
+                text: "Get info";
+                enabled: root.ytdlp-ready && !root.ytdlp-busy && link.text != "";
+                clicked => {
+                    root.ytdlp-info(link.text);
+                }
+            }
+        }
+
+        Text {
+            text: root.ytdlp-result;
+            wrap: word-wrap;
+        }
 
         ListView {
             for name in root.categories: Text {

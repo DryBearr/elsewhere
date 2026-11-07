@@ -2,7 +2,7 @@
 //! errors into Rust ones. Everything yt-dlp-specific lives in ytdlp.py.
 
 use std::env;
-use std::ffi::CString;
+use std::ffi::{CString, OsStr};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -102,19 +102,15 @@ fn start(setup: &Setup) -> Result<Py<PyModule>, Error> {
         check_home(setup)?;
         let path = env::join_paths(&setup.python_paths)
             .map_err(|err| Error::NotReady(format!("python_paths: {err}")))?;
-        // SAFETY: Python reads these once, while starting. This runs at most once per
-        // process, and the module docs ask callers to init before starting other threads.
-        unsafe {
-            if let Some(home) = &setup.python_home {
-                env::set_var("PYTHONHOME", home);
-            }
-            if !setup.python_paths.is_empty() {
-                env::set_var("PYTHONPATH", &path);
-            }
-            env::set_var("PYTHONUTF8", "1");
-            env::set_var("PYTHONDONTWRITEBYTECODE", "1");
-            env::set_var("PYTHONNOUSERSITE", "1");
+        // Python reads these once, while starting.
+        if let Some(home) = &setup.python_home {
+            set_env("PYTHONHOME", home.as_os_str());
         }
+        if !setup.python_paths.is_empty() {
+            set_env("PYTHONPATH", &path);
+        }
+        set_env("PYTHONUTF8", "1".as_ref());
+        set_env("PYTHONNOUSERSITE", "1".as_ref());
         Python::initialize();
     }
 
@@ -136,6 +132,16 @@ fn start(setup: &Setup) -> Result<Py<PyModule>, Error> {
             ))
         })
     })
+}
+
+/// Sets an environment variable unless it already has this value, so an app that set
+/// them all before starting threads (see the module docs) gets no writes here.
+fn set_env(key: &str, value: &OsStr) {
+    if env::var_os(key).as_deref() != Some(value) {
+        // SAFETY: runs at most once per process, before Python starts. The module docs ask
+        // callers to init, or to set these variables, before starting other threads.
+        unsafe { env::set_var(key, value) };
+    }
 }
 
 /// Checks that `python_home` exists and that a standard library can be found.

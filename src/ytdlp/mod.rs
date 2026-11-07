@@ -20,8 +20,11 @@
 //! Notes:
 //! - [`info`] and [`download`] block until yt-dlp is done. Call them from a worker thread,
 //!   never the UI thread. Several threads may call them at the same time.
-//! - Python starts once per process. Call [`init`] early, before the app starts other
-//!   threads, because it sets environment variables that Python reads when it starts.
+//! - Python starts once per process. [`init`] sets environment variables that Python reads
+//!   when it starts, so call it before the app starts other threads. An app that has to
+//!   init later can set them itself first: `PYTHONHOME` (when `python_home` is set),
+//!   `PYTHONPATH` (when `python_paths` is not empty), `PYTHONUTF8=1` and
+//!   `PYTHONNOUSERSITE=1`. [`init`] leaves variables that already match alone.
 //! - `on_event` runs on the calling thread without the Python lock held, so it may block
 //!   or call back into this module.
 //! - On Android and iOS, pass `--cache-dir <app folder>` or `--no-cache-dir`; yt-dlp's

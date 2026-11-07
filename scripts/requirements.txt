@@ -1,0 +1,4 @@
+# Python packages for yt-dlp. They go into the Android app (scripts/android_python.py)
+# and into vendor/python for the desktop tests (CI).
+yt-dlp==2026.10.26
+certifi==2026.10.23

@@ -2,11 +2,15 @@
 #   Elsewhere.apk  signed with the ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD secrets
 #   Elsewhere.ipa  unsigned; SideStore and AltStore sign it on the device
 # The Pages workflow then refreshes the download page and source.json.
+#
+# Run it by hand on any branch (Actions → Release → Run workflow) to get test builds:
+# both files stay as workflow artifacts and nothing is published.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -27,7 +31,7 @@ jobs:
         id: version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
             exit 1
           fi
@@ -58,6 +62,9 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" > /dev/null
           cargo install cargo-apk --locked
 
+      - name: Bundle Python and yt-dlp
+        run: python3 scripts/android_python.py
+
       - name: Build APK
         env:
           PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -65,7 +72,9 @@ jobs:
           export ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME"
           export CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/release.p12"
           export CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$PASSWORD"
-          cargo apk build --release --lib
+          export PYO3_PYTHON=python3
+          export PYO3_CROSS_LIB_DIR="$PWD/target/android/prefix/lib"
+          cargo apk build --release --lib --features ytdlp
           cp target/release/apk/Elsewhere.apk Elsewhere.apk
 
       - uses: actions/upload-artifact@v4
@@ -111,6 +120,7 @@ jobs:
 
   publish:
     needs: [android, ios]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

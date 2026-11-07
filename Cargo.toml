@@ -34,12 +34,21 @@ fontique = { version = "0.11", features = ["fontconfig-dlopen"] }
 name = "ytdlp"
 required-features = ["ytdlp"]
 
-# Android package, built by `cargo apk build --release --lib`. versionName comes from
-# `version` above, and the release workflow checks that the git tag matches it.
+# Android package. versionName comes from `version` above, and the release workflow
+# checks that the git tag matches it. Build it with Python and yt-dlp inside:
+#   python3 scripts/android_python.py
+#   PYO3_CROSS_LIB_DIR=$PWD/target/android/prefix/lib cargo apk build --release --lib --features ytdlp
 [package.metadata.android]
 package = "io.github.drybearr.elsewhere"
 apk_name = "Elsewhere"
 build_targets = ["aarch64-linux-android"]
+# Made by scripts/android_python.py: the Python standard library and yt-dlp, and libpython.
+assets = "target/android/assets"
+runtime_libs = "target/android/libs"
+
+# yt-dlp needs the network.
+[[package.metadata.android.uses_permission]]
+name = "android.permission.INTERNET"
 
 [package.metadata.android.sdk]
 min_sdk_version = 26
