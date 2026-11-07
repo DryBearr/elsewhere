@@ -27,16 +27,27 @@ export component App inherits Window {
             wrap: word-wrap;
         }
 
+        link := LineEdit {
+            placeholder-text: "Paste a video link";
+            enabled: root.ytdlp-ready;
+            accepted => {
+                if (root.ytdlp-ready && !root.ytdlp-busy && self.text != "") {
+                    root.ytdlp-info(self.text);
+                }
+            }
+        }
+
         HorizontalLayout {
             spacing: 8px;
 
-            link := LineEdit {
-                placeholder-text: "Paste a video link";
+            // Slint's long-press menu (with Paste) exists only on Android, so phones
+            // without it, like the iPhone, need a button.
+            Button {
+                text: "Paste";
                 enabled: root.ytdlp-ready;
-                accepted => {
-                    if (root.ytdlp-ready && !root.ytdlp-busy && self.text != "") {
-                        root.ytdlp-info(self.text);
-                    }
+                clicked => {
+                    link.text = "";
+                    link.paste();
                 }
             }
 
