@@ -23,8 +23,8 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-PYTHON_VERSION = '3.14.10'
-PYTHON_SHA256 = '423c80b957330cf0ebb92b9b20f2294c292144a441bdb0ceb8c69d14928e569b'
+PYTHON_VERSION = '3.15.2'
+PYTHON_SHA256 = 'cfd4f0fdaff465ba62ebf3c3df2c8c410d0802fef3f98897082460df704cfef6'
 TRIPLET = 'aarch64-linux-android'
 ABI = 'arm64-v8a'
 
