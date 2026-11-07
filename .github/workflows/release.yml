@@ -1,0 +1,128 @@
+# Push a tag like v0.1.0 (matching `version` in Cargo.toml) to build and publish:
+#   Elsewhere.apk  signed with the ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD secrets
+#   Elsewhere.ipa  unsigned; SideStore and AltStore sign it on the device
+# The Pages workflow then refreshes the download page and source.json.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Tag must match the Cargo.toml version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Load the signing key
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE" ] || [ -z "$PASSWORD" ]; then
+            echo "::error::Add the ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD repository secrets"
+            exit 1
+          fi
+          echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/release.p12"
+
+      - name: Install Android build tools
+        run: |
+          rustup target add aarch64-linux-android
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" > /dev/null
+          cargo install cargo-apk --locked
+
+      - name: Build APK
+        env:
+          PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          export ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME"
+          export CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/release.p12"
+          export CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$PASSWORD"
+          cargo apk build --release --lib
+          cp target/release/apk/Elsewhere.apk Elsewhere.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apk
+          path: Elsewhere.apk
+          if-no-files-found: error
+
+  ios:
+    needs: check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install iOS build tools
+        run: |
+          rustup target add aarch64-apple-ios
+          brew install xcodegen
+
+      - name: Build unsigned IPA
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          cd ios
+          xcodegen
+          xcodebuild archive \
+            -project Elsewhere.xcodeproj \
+            -scheme Elsewhere \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath "$RUNNER_TEMP/Elsewhere.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$VERSION"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$RUNNER_TEMP/Elsewhere.xcarchive/Products/Applications/Elsewhere.app" "$RUNNER_TEMP/ipa/Payload/"
+          cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/Elsewhere.ipa" Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipa
+          path: Elsewhere.ipa
+          if-no-files-found: error
+
+  publish:
+    needs: [android, ios]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/Elsewhere.apk dist/Elsewhere.ipa \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

@@ -1,0 +1,41 @@
+# XcodeGen spec for the iOS app, following Slint's iOS guide.
+# Generate the Xcode project with `xcodegen` in this folder (needs a Mac).
+# The release workflow sets MARKETING_VERSION and CURRENT_PROJECT_VERSION.
+name: Elsewhere
+options:
+  bundleIdPrefix: io.github.drybearr
+settings:
+  ENABLE_USER_SCRIPT_SANDBOXING: NO
+  MARKETING_VERSION: "0.0.0"
+  CURRENT_PROJECT_VERSION: "0"
+targets:
+  Elsewhere:
+    type: application
+    platform: iOS
+    deploymentTarget: "15.0"
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: io.github.drybearr.elsewhere
+      TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Elsewhere
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CADisableMinimumFrameDurationOnPhone: true
+        UILaunchScreen:
+          - ImageRespectSafeAreaInsets: false
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Slint
+                UISceneDelegateClassName: SlintWindowSceneDelegate
+    sources: []
+    scheme: {}
+    postCompileScripts:
+      - name: Build Rust with cargo
+        script: |
+          ./build_for_ios_with_cargo.bash elsewhere
+        outputFileLists:
+          $TARGET_BUILD_DIR/$EXECUTABLE_PATH
