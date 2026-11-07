@@ -1,0 +1,22 @@
+[package]
+name = "elsewhere"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rusqlite = { version = "0.41", features = ["bundled"] }
+slint = "1.18"
+
+[build-dependencies]
+slint-build = "1.18"
+
+[target.'cfg(target_os = "android")'.dependencies]
+slint = { version = "1.18", features = ["backend-android-activity-06"] }
+
+# Linux desktop only: load fontconfig at runtime, so builds need no fontconfig dev headers.
+# Keep the version in step with the fontique version Slint uses.
+[target.'cfg(target_os = "linux")'.dependencies]
+fontique = { version = "0.11", features = ["fontconfig-dlopen"] }
