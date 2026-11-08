@@ -29,6 +29,11 @@ pub fn init(setup: &Setup) -> Result<String, Error> {
     version()
 }
 
+/// Whether Python and the bridge are up (init succeeded once).
+pub fn is_started() -> bool {
+    BRIDGE.get().is_some()
+}
+
 pub fn version() -> Result<String, Error> {
     let bridge = bridge()?;
     Python::attach(|py| {

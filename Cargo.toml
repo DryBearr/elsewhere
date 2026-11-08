@@ -41,6 +41,14 @@ required-features = ["ytdlp"]
 name = "playlists"
 required-features = ["playlists"]
 
+[[test]]
+name = "api"
+required-features = ["playlists"]
+
+[[test]]
+name = "api_lazy"
+required-features = ["playlists"]
+
 # Smaller phone builds: no debug info in the Rust core.
 [profile.release]
 strip = "debuginfo"
