@@ -203,3 +203,26 @@ fn serve(mut stream: TcpStream) {
         let _ = stream.write_all(part);
     }
 }
+
+/// Folders for `api::start` under a fresh test folder, with the test Python: the phone
+/// Python when YTDLP_TEST_PYTHON_HOME is set (emulator, simulator), else vendor/python.
+pub fn api_folders(name: &str) -> elsewhere::api::Folders {
+    let dir = folder(name);
+    let text = |path: PathBuf| path.to_string_lossy().into_owned();
+    let python_home = std::env::var("YTDLP_TEST_PYTHON_HOME").ok();
+    let python_paths = match python_home {
+        Some(_) => Vec::new(),
+        None => vec![text(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/python"),
+        )],
+    };
+    elsewhere::api::Folders {
+        data: text(dir.join("data")),
+        cache: text(dir.join("cache")),
+        temp: text(dir.join("tmp")),
+        media: text(dir.join("media")),
+        python_home,
+        python_paths,
+        programs: None,
+    }
+}

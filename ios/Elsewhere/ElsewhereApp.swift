@@ -1,16 +1,31 @@
 import SwiftUI
 
-/// The app's one screen. Each feature is a file with one view; list it here to plug it in.
+/// The app's tabs. Each screen is its own file; list it here to plug it in.
+enum Tab: Hashable {
+    case downloads, add, library
+}
+
 @main
 struct ElsewhereApp: App {
+    @State private var tab = Tab.downloads
+
+    init() {
+        Core.boot()
+        SelfTest.run(arguments: ProcessInfo.processInfo.arguments)
+    }
+
     var body: some Scene {
         WindowGroup {
-            NavigationStack {
-                List {
-                    YtdlpView()
-                    CategoriesView()
-                }
-                .navigationTitle("Elsewhere")
+            TabView(selection: $tab) {
+                NavigationStack { DownloadsView() }
+                    .tabItem { Label("Downloads", systemImage: "arrow.down.circle") }
+                    .tag(Tab.downloads)
+                NavigationStack { AddView { tab = .downloads } }
+                    .tabItem { Label("Add", systemImage: "plus") }
+                    .tag(Tab.add)
+                NavigationStack { LibraryView() }
+                    .tabItem { Label("Library", systemImage: "books.vertical") }
+                    .tag(Tab.library)
             }
         }
     }
@@ -26,17 +41,4 @@ func describe(_ error: Error) -> String {
         }
     }
     return "\(error)"
-}
-
-/// The app's folders, for the Rust core.
-enum AppFolders {
-    static var data: URL {
-        let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }
-
-    static var cache: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-    }
 }

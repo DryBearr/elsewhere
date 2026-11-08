@@ -31,7 +31,7 @@ export PYO3_CROSS_LIB_DIR=$root/target/android/prefix/lib
 # (No empty arrays: macOS bash 3.2 treats them as unset under set -u.)
 flags=(--profile dev)
 [ "$profile" = release ] && flags=(--release)
-cargo rustc --lib --features ytdlp --target "$target" "${flags[@]}" --crate-type cdylib
+cargo rustc --lib --features playlists --target "$target" "${flags[@]}" --crate-type cdylib
 library=target/$target/$profile/libelsewhere.so
 mkdir -p "target/android/libs/$abi"
 cp "$library" "target/android/libs/$abi/"

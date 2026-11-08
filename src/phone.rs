@@ -17,7 +17,13 @@ use std::path::{Component, Path, PathBuf};
 ///
 /// Changing the environment is only safe while no other thread reads it, so the apps call
 /// this (through api::start_ytdlp) first thing at startup, before starting other work.
-pub fn set_env(cache: &Path, temp: &Path, python_home: Option<&Path>, bin: Option<&Path>) {
+pub fn set_env(
+    cache: &Path,
+    temp: &Path,
+    python_home: Option<&Path>,
+    python_paths: &[PathBuf],
+    bin: Option<&Path>,
+) {
     let pycache = cache.join("python");
     for dir in [cache, temp, &pycache] {
         let _ = fs::create_dir_all(dir);
@@ -42,6 +48,11 @@ pub fn set_env(cache: &Path, temp: &Path, python_home: Option<&Path>, bin: Optio
         }
         if let Some(home) = python_home {
             std::env::set_var("PYTHONHOME", home);
+        }
+        if let Ok(paths) = std::env::join_paths(python_paths)
+            && !python_paths.is_empty()
+        {
+            std::env::set_var("PYTHONPATH", paths);
         }
         std::env::set_var("PYTHONUTF8", "1");
         std::env::set_var("PYTHONNOUSERSITE", "1");
@@ -69,8 +80,13 @@ pub fn link_programs(programs: &Path, data: &Path) -> Option<PathBuf> {
 /// Unpacks a python.tar stream into `<data>/python`, unless that folder already holds the
 /// same version: the archive starts with a stamp, and a matching stamp on disk means
 /// nothing to do. Returns the Python home.
+/// Where `unpack` puts Python's home inside `data`.
+pub fn python_dir(data: &Path) -> PathBuf {
+    data.join("python")
+}
+
 pub fn unpack(mut tar: impl Read, data: &Path) -> io::Result<PathBuf> {
-    let home = data.join("python");
+    let home = python_dir(data);
     let stamp = match next_entry(&mut tar)? {
         Some(entry) if entry.path == Path::new("stamp") => {
             let mut stamp = Vec::new();

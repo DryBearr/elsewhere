@@ -31,7 +31,7 @@ libraries=()
 for target in "${targets[@]}"; do
   if [ "$target" = aarch64-apple-ios ]; then slice=ios-arm64; else slice=ios-arm64_x86_64-simulator; fi
   PYO3_CROSS_LIB_DIR=$python/$slice/lib-arm64 \
-    cargo rustc --lib --features ytdlp --target "$target" "${flags[@]}" --crate-type staticlib
+    cargo rustc --lib --features playlists --target "$target" "${flags[@]}" --crate-type staticlib
   libraries+=("target/$target/$profile/libelsewhere.a")
 done
 

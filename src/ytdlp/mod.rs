@@ -163,6 +163,12 @@ pub fn init(setup: &Setup) -> Result<String, Error> {
 }
 
 /// yt-dlp's version, for example `2026.10.26`.
+/// Whether [`init`] has succeeded in this process. Python cannot be stopped again, so this
+/// stays true until the app ends.
+pub fn is_started() -> bool {
+    python::is_started()
+}
+
 pub fn version() -> Result<String, Error> {
     python::version()
 }
