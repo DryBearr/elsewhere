@@ -49,7 +49,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: target/mpv/x86_64
-          key: mpv-x86_64-${{ hashFiles('scripts/android_mpv.sh') }}
+          key: mpv-x86_64-${{ hashFiles('scripts/android_mpv.sh', 'scripts/mpv_sources.sh') }}
 
       - name: Build libmpv for the emulator
         run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_mpv.sh x86_64
@@ -143,7 +143,15 @@ jobs:
       - name: Install iOS build tools
         run: |
           rustup target add aarch64-apple-ios-sim aarch64-apple-ios
-          brew install xcodegen
+          brew install xcodegen pkgconf
+
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv-ios
+          key: mpv-ios-simulator-${{ hashFiles('scripts/ios_mpv.sh', 'scripts/mpv_sources.sh') }}
+
+      - name: Build libmpv for the simulator
+        run: scripts/ios_mpv.sh simulator
 
       - name: Start a simulator
         run: |
@@ -157,24 +165,29 @@ jobs:
           slice="$PWD/target/ios/Python.xcframework/ios-arm64_x86_64-simulator"
           export PYO3_PYTHON=python3
           export PYO3_CROSS_LIB_DIR="$slice/lib-arm64"
-          cargo test --no-run --features playlists --target aarch64-apple-ios-sim --lib --test ytdlp --test playlists --test api --test api_lazy --test recovery \
+          cargo test --no-run --features playlists,player --target aarch64-apple-ios-sim --lib --test ytdlp --test playlists --test api --test api_lazy --test recovery --test player \
             --message-format=json > build.json
-          python3 scripts/test_binaries.py build.json elsewhere ytdlp playlists api api_lazy recovery
+          python3 scripts/test_binaries.py build.json elsewhere ytdlp playlists api api_lazy recovery player
           # Lay them out like the app: Frameworks/ next to the programs, and one Python
           # home with the shared standard library plus this slice's C modules.
           mkdir -p run/Frameworks run/python/lib
-          mv elsewhere-tests ytdlp-tests playlists-tests api-tests api_lazy-tests recovery-tests run/
+          mv elsewhere-tests ytdlp-tests playlists-tests api-tests api_lazy-tests recovery-tests player-tests run/
           cp -R "$slice/Python.framework" run/Frameworks/
+          cp -R target/ios/mpv.xcframework/ios-arm64-simulator/mpv.framework run/Frameworks/
           cp -R target/ios/Python.xcframework/lib/python3.15 run/python/lib/
           cp -R "$slice/lib-arm64/python3.15/" run/python/lib/python3.15/
           find run -name '*.so' -exec codesign --force --sign - {} \;
-          codesign --force --sign - run/Frameworks/Python.framework run/elsewhere-tests run/recovery-tests run/ytdlp-tests run/playlists-tests run/api-tests run/api_lazy-tests
+          codesign --force --sign - run/Frameworks/Python.framework run/Frameworks/mpv.framework run/player-tests run/elsewhere-tests run/recovery-tests run/ytdlp-tests run/playlists-tests run/api-tests run/api_lazy-tests
 
       - name: Run the tests in the simulator
         run: |
           export SIMCTL_CHILD_YTDLP_TEST_PYTHON_HOME="$PWD/run/python"
           xcrun simctl spawn "$UDID" "$PWD/run/elsewhere-tests" --test-threads=4
           xcrun simctl spawn "$UDID" "$PWD/run/recovery-tests"
+          # The media engine, again and again: timing bugs show up on a busy simulator.
+          export SIMCTL_CHILD_PLAYER_TEST_MEDIA="$PWD/tests/media"
+          for run in 1 2 3; do xcrun simctl spawn "$UDID" "$PWD/run/player-tests" --test-threads=4 || exit 1; done
+          xcrun simctl spawn "$UDID" "$PWD/run/player-tests" --test-threads=1
           xcrun simctl spawn "$UDID" "$PWD/run/ytdlp-tests" --test-threads=4
           xcrun simctl spawn "$UDID" "$PWD/run/playlists-tests" --test-threads=4
           xcrun simctl spawn "$UDID" "$PWD/run/api-tests" --test-threads=4

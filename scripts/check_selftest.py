@@ -95,7 +95,7 @@ def main():
             if state and int(state.get('took', '0')) < 1500:
                 print(f'{name} ended after {state.get("took")} ms, not in real time: {state}')
                 return 3
-        if refused and refused[-1] != 'INPUT':
+        if refused and refused[-1].upper() != 'INPUT':
             print(f'a file outside the media folder was not refused as input: {refused[-1]}')
             return 3
         return 0 if all(name in played for name in args) and refused else 1

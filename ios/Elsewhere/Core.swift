@@ -3,6 +3,11 @@ import Foundation
 /// The Rust core. Calls into it block, so screens make them off the main thread
 /// (`Task.detached`).
 enum Core {
+    /// Where saved media goes; players open files inside it only. Documents is visible in
+    /// the Files app (UIFileSharingEnabled in project.yml).
+    static let media = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Media")
+
     /// Why the core did not start, if it did not.
     private(set) static var startError: String?
 
@@ -13,8 +18,6 @@ enum Core {
         let files = FileManager.default
         let data = files.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         let cache = files.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        // Documents is visible in the Files app (UIFileSharingEnabled in project.yml).
-        let media = files.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("Media")
         let folders = Folders(
             data: data.path,
             cache: cache.path,

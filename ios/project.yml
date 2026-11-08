@@ -35,12 +35,19 @@ targets:
       - Elsewhere
       # Swift bindings for the Rust core, written by scripts/ios_rust.sh.
       - path: ../target/ios/bindings/elsewhere.swift
+      # The player's test files (72 KB), which the self-test plays (SelfTest.swift).
+      - path: ../tests/media
+        type: folder
+        buildPhase: resources
     dependencies:
       # The Rust core (static library), from scripts/ios_rust.sh.
       - framework: ../target/ios/ElsewhereCore.xcframework
         embed: false
       # Python, with yt-dlp in its site-packages, from scripts/mobile_python.py.
       - framework: ../target/ios/Python.xcframework
+        embed: true
+      # libmpv for the media engine, from scripts/ios_mpv.sh; loaded when a player is made.
+      - framework: ../target/ios/mpv.xcframework
         embed: true
     postCompileScripts:
       # Python's official helper: copies the standard library and yt-dlp into

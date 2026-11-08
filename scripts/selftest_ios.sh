@@ -65,4 +65,7 @@ stop
 launch 6-ytdlp ytdlp
 expect 6-ytdlp ytdlp
 stop
+launch 7-player player
+expect 7-player player song.m4a clip.webm
+stop
 echo "The job path works in the iOS app."
