@@ -98,6 +98,9 @@ pub fn start(
 
     #[cfg(feature = "ytdlp")]
     super::ytdlp::prepare_env(&folders, python_bundle.is_some());
+    // Players open saved media only.
+    #[cfg(feature = "player")]
+    crate::player::allow_folders(&[PathBuf::from(&folders.media)]);
 
     let db = Path::new(&folders.data).join("elsewhere.db");
     let jobs = jobs::open_global(&db).map_err(not_ready)?;

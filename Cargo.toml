@@ -14,6 +14,9 @@ crate-type = ["rlib"]
 ytdlp = ["dep:pyo3", "dep:cc"]
 # Save YouTube and YouTube Music playlists into the library (src/playlists). Built on ytdlp.
 playlists = ["ytdlp", "dep:serde_json"]
+# The media engine (src/player): plays local files through libmpv, which is loaded when the
+# first player is made. No build dependency: the core builds without libmpv.
+player = []
 # The uniffi-bindgen tool, which writes the Kotlin and Swift bindings. Build machines only.
 bindgen = ["uniffi/cli", "uniffi/cargo-metadata"]
 
@@ -48,6 +51,10 @@ required-features = ["playlists"]
 [[test]]
 name = "api_lazy"
 required-features = ["playlists"]
+
+[[test]]
+name = "player"
+required-features = ["player"]
 
 # Smaller phone builds: no debug info in the Rust core. Panics must unwind (never abort):
 # the core catches them at its boundaries and heals (src/health.rs).

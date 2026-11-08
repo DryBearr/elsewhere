@@ -8,6 +8,7 @@ src/                Rust core, shared by both apps
   ytdlp/            yt-dlp through embedded Python (feature `ytdlp`)
   playlists/        save YouTube / YouTube Music playlists into the library (feature `playlists`)
   jobs/             runs long work in the background and reports exact status to the app
+  player/           the media engine: plays local files through libmpv (feature `player`)
   problem.rs        what a failure means for people: kind, text, detail, retry
   health.rs         supervised parts that restart themselves; says when the app must restart
   logs.rs           the core's log, on the phone only
@@ -87,6 +88,18 @@ Nothing leaves the phone: no crash reports, no telemetry. The core heals what it
 - **Restart:** the database is the truth and the app's start is the recovery path, so restarting (Android does it by itself) is always safe.
 
 Tests break things on purpose: delivery crashes, failing saves, a stuck and a stalled job (`src/jobs/tests.rs`), a server that fails twice or always (`tests/playlists.rs`), log rotation and crash notes (`tests/recovery.rs`). The Mobile workflow runs them on the emulator and simulator too.
+
+## Player module
+
+`player` is the media engine that music, movies, TV shows and the rest will build on. It plays one local file per `Player` (several can play at once) and knows nothing about the library, queues or resume points.
+
+- **libmpv underneath,** loaded when the first player is made (no build dependency; `ELSEWHERE_LIBMPV` points at it on a desktop). It plays mp4, webm, mkv, m4a, opus and more, with hardware decoding where the phone has it.
+- **Local files only:** a path must be absolute, a regular file and, after resolving links, inside the folders `allow_folders` named (the app's media folder). mpv runs with no config files, no scripts, no yt-dlp, no following references inside files.
+- **State like jobs:** `open(path, start_ms, autoplay)`, `play`, `pause`, `seek`, `set_speed` (0.25 to 4), `set_volume`, `stop`; every change bumps `revision` and the listener gets the whole `PlayerState` (Idle, Loading, Playing, Paused, Ended, Failed with a `Problem`; position at most 4 times a second).
+- **Robust:** events of a replaced file are ignored, a file that does not open in 20 s fails, a broken file fails with a reason and the next one plays, the event thread runs supervised, and a panicking listener changes nothing.
+- The apps get it as `CorePlayer`. Video output and the lock screen come next, from the apps' side; until then video tracks are off.
+
+Tests: `src/player/machine.rs` covers the rules without libmpv; `tests/player.rs` plays the small files in `tests/media` through the real libmpv with null outputs (every format to the end, seeking, speed, refused paths, broken and cut-off files, replacing files, two players, quick drops).
 
 ## Playlists module
 

@@ -13,6 +13,8 @@ mod core;
 mod demo;
 mod jobs;
 mod library;
+#[cfg(feature = "player")]
+mod player;
 #[cfg(feature = "playlists")]
 mod playlists;
 #[cfg(feature = "ytdlp")]
@@ -26,6 +28,8 @@ pub use self::core::*;
 pub use self::demo::*;
 pub use self::jobs::*;
 pub use self::library::*;
+#[cfg(feature = "player")]
+pub use self::player::*;
 #[cfg(feature = "playlists")]
 pub use self::playlists::*;
 #[cfg(feature = "ytdlp")]
