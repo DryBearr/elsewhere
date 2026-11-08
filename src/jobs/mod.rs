@@ -1,5 +1,5 @@
 //! Runs long work in the background (saving playlists now; scans, NAS sync and conversions
-//! later) and tells the app exactly what is happening.
+//! later) and tells the app exactly what is happening, also across a sudden close.
 //!
 //! How the app sees a job:
 //!
@@ -13,18 +13,25 @@
 //!   dropped by the throttling. `JobState::log_lines` says how many there are; the app
 //!   reads new ones with [`Jobs::logs`].
 //! - **End.** Every job ends exactly once: [`Status::Done`], [`Status::Failed`] or
-//!   [`Status::Cancelled`]. A work function that panics fails its job; it does not take
-//!   the app down.
+//!   [`Status::Cancelled`]. A runner that panics fails its job; it does not take the app
+//!   down.
+//! - **Sudden close.** [`Jobs::open`] keeps the jobs in the library database. The delivery
+//!   thread saves each state change and new log line (one transaction per round, so never
+//!   half-written) before it tells the app. When the app starts again, finished jobs come
+//!   back as history, and jobs that were queued or running come back as
+//!   [`Status::Interrupted`]: the app offers [`Jobs::resume`] or [`Jobs::discard`].
 //!
-//! A feature plugs in by handing [`Jobs::start`] a function that does the work and reports
-//! through its [`Job`] handle; see `playlists::run` for one.
-//!
-//! The jobs live in memory for now: they are lost if the app is closed.
+//! A feature plugs in with one line: [`Jobs::register`] a runner for its kind, then
+//! [`Jobs::start`] jobs of that kind with params (text the runner understands, like a
+//! link and options). The runner must be safe to run again with the same params: resuming
+//! runs it again from the start, and it should skip what is already done (playlists do).
 
 mod runner;
+mod store;
 #[cfg(test)]
 mod tests;
 
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -36,21 +43,25 @@ pub type JobId = u64;
 const APP_MAX_RUNNING: usize = 2;
 /// The shortest time between two byte-progress updates of one job.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
-/// Log lines kept in memory per job; the oldest go first.
+/// Log lines kept in memory per job; the oldest go first (the database keeps them all).
 const MAX_LOG_LINES: usize = 5000;
+/// Finished jobs kept in the database; older ones are removed when jobs are opened.
+const KEEP_FINISHED: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     /// Waiting for a free slot.
     Queued,
     Running,
+    /// Was queued or running when the app closed. Waits for resume or discard.
+    Interrupted,
     Done,
     Failed,
     Cancelled,
 }
 
 impl Status {
-    /// Done, Failed or Cancelled: nothing will change any more.
+    /// Done, Failed or Cancelled: nothing will change any more (except by resume).
     pub fn is_finished(self) -> bool {
         matches!(self, Status::Done | Status::Failed | Status::Cancelled)
     }
@@ -108,9 +119,10 @@ pub struct LogLine {
     pub at: u64,
 }
 
-/// The work of a job. Returns Err with a message when the whole job failed; problems with
-/// single items are reported through the handle and the job can still be Done.
-pub type Work = Box<dyn FnOnce(&Job) -> Result<(), String> + Send + 'static>;
+/// What a kind of job does, given its params. Returns Err with a message when the whole job
+/// failed; problems with single items are reported through the handle and the job can
+/// still be Done.
+pub type Runner = Arc<dyn Fn(&Job, &str) -> Result<(), String> + Send + Sync>;
 
 /// The jobs of the app, or of a test.
 pub struct Jobs {
@@ -118,11 +130,39 @@ pub struct Jobs {
 }
 
 impl Jobs {
-    /// Jobs that run at most `max_running` at a time (at least 1).
+    /// Jobs kept in memory only, running at most `max_running` at a time.
     pub fn new(max_running: usize) -> Jobs {
         Jobs {
-            inner: Inner::start(max_running.max(1)),
+            inner: Inner::start(max_running.max(1), None),
         }
+    }
+
+    /// Jobs kept in the library database at `db`. Jobs from earlier runs come back:
+    /// finished ones as history (the newest 200), unfinished ones as Interrupted.
+    pub fn open(db: &Path, max_running: usize) -> Result<Jobs, String> {
+        let mut store = store::Store::open(db)?;
+        let saved = store.load()?;
+        let next_id = store
+            .next_id()
+            .map_err(|err| format!("could not read the saved jobs: {err}"))?;
+        let restored = runner::Restored {
+            store,
+            saved,
+            next_id,
+        };
+        Ok(Jobs {
+            inner: Inner::start(max_running.max(1), Some(restored)),
+        })
+    }
+
+    /// Says how to run jobs of `kind`. Register every kind before starting or resuming
+    /// jobs of it; registering again replaces the runner.
+    pub fn register(
+        &self,
+        kind: &str,
+        runner: impl Fn(&Job, &str) -> Result<(), String> + Send + Sync + 'static,
+    ) {
+        self.inner.register(kind, Arc::new(runner));
     }
 
     /// Sets the one listener, replacing any earlier one. It gets the current state of
@@ -132,21 +172,28 @@ impl Jobs {
         self.inner.set_listener(Arc::new(listener));
     }
 
-    /// Queues `work` and returns its id at once.
-    pub fn start(
-        &self,
-        kind: &str,
-        title: &str,
-        work: impl FnOnce(&Job) -> Result<(), String> + Send + 'static,
-    ) -> JobId {
-        self.inner.queue(kind, title, Box::new(work))
+    /// Queues a job of a registered `kind` and returns its id at once. `params` is kept
+    /// with the job and handed to the runner, also when the job is resumed.
+    pub fn start(&self, kind: &str, title: &str, params: &str) -> Result<JobId, String> {
+        self.inner.queue(kind, title, params)
     }
 
-    /// Asks a job to stop. A queued job is cancelled at once; a running one when its work
-    /// notices (see Job::is_cancelled and Job::on_cancel). False if the job is unknown
-    /// or already finished.
+    /// Asks a job to stop. A queued or interrupted job is cancelled at once; a running one
+    /// when its runner notices (see Job::is_cancelled and Job::on_cancel). False if the
+    /// job is unknown or already finished.
     pub fn cancel(&self, id: JobId) -> bool {
         self.inner.cancel(id)
+    }
+
+    /// Runs an Interrupted (or Failed) job again from the start, with its params: the
+    /// "Resume" (or "Retry") button. Its counts start over; its log goes on.
+    pub fn resume(&self, id: JobId) -> Result<(), String> {
+        self.inner.resume(id)
+    }
+
+    /// Gives up an Interrupted job: it ends as Cancelled. False if it is not interrupted.
+    pub fn discard(&self, id: JobId) -> bool {
+        self.inner.discard(id)
     }
 
     pub fn get(&self, id: JobId) -> Option<JobState> {
@@ -163,26 +210,41 @@ impl Jobs {
         self.inner.logs(id, since)
     }
 
-    /// Removes a finished job from the list. False if it is unknown or still going.
+    /// Removes a finished job, also from the database. False if it is unknown or not
+    /// finished.
     pub fn forget(&self, id: JobId) -> bool {
         self.inner.forget(id)
     }
 }
 
 impl Drop for Jobs {
+    /// Saves what is not saved yet and stops the delivery thread. Running jobs keep their
+    /// threads until they end; in the database they stay running, so the next open
+    /// shows them as Interrupted.
     fn drop(&mut self) {
         self.inner.shut_down();
     }
 }
 
-/// The app's jobs, created on first use.
-pub fn global() -> &'static Jobs {
-    static JOBS: OnceLock<Jobs> = OnceLock::new();
-    JOBS.get_or_init(|| Jobs::new(APP_MAX_RUNNING))
+static GLOBAL: OnceLock<Jobs> = OnceLock::new();
+
+/// Opens the app's jobs, kept in the library database at `db`. Call it once at startup;
+/// later calls return the same jobs.
+pub fn open_global(db: &Path) -> Result<&'static Jobs, String> {
+    if let Some(jobs) = GLOBAL.get() {
+        return Ok(jobs);
+    }
+    let jobs = Jobs::open(db, APP_MAX_RUNNING)?;
+    Ok(GLOBAL.get_or_init(|| jobs))
 }
 
-/// What a work function gets: reports progress and asks whether to stop. Cheap to clone;
-/// clones report to the same job from any thread.
+/// The app's jobs, once `open_global` has run.
+pub fn global() -> Option<&'static Jobs> {
+    GLOBAL.get()
+}
+
+/// What a runner gets: reports progress and asks whether to stop. Cheap to clone; clones
+/// report to the same job from any thread.
 #[derive(Clone)]
 pub struct Job {
     id: JobId,
@@ -219,7 +281,8 @@ impl Job {
             .change(self.id, true, |job| job.state.current = Some(current));
     }
 
-    /// Byte progress of the current item. Sent at most 4 times a second.
+    /// Byte progress of the current item. Sent at most 4 times a second, and not saved:
+    /// it means nothing after a restart.
     pub fn progress(
         &self,
         bytes: u64,

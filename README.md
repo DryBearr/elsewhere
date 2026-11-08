@@ -59,7 +59,9 @@ Phones: both carry their own Python (the official CPython 3.15 builds from pytho
 - **End:** every job ends exactly once (Done, Failed or Cancelled); a panicking job fails instead of crashing the app, and a panicking listener gets the state again.
 - At most 2 jobs run at a time; `cancel` stops queued jobs at once and running ones through their cancel hooks.
 
-A feature plugs in by handing `start` a function that reports through its `Job` handle, like `playlists::run`. Jobs live in memory for now.
+- **Sudden close:** `Jobs::open(db)` keeps jobs in the library database (migration 0003). The delivery thread saves each change and new log line in one transaction before it tells the app. On the next start, finished jobs come back as history (the newest 200) and unfinished ones as **Interrupted**: the app offers `resume(id)` (runs it again from the start with the same params) or `discard(id)` (ends it as Cancelled). Failed jobs can be resumed too, as a retry.
+
+A feature plugs in with one line, `jobs.register(kind, runner)`, then starts jobs with `jobs.start(kind, title, params)`. Params are text the runner understands (playlists use `playlists::job_params(link, options)` and `playlists::run_job`). A runner must be safe to run again with the same params, because resuming does exactly that; playlists skip saved items and yt-dlp continues partial files.
 
 ## Playlists module
 

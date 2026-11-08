@@ -8,6 +8,7 @@ use rusqlite::Connection;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_playlists.sql"),
+    include_str!("../migrations/0003_jobs.sql"),
 ];
 
 /// Opens the database, sets connection pragmas and applies pending migrations.

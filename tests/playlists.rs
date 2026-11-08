@@ -324,18 +324,21 @@ fn real_youtube_video_quality() {
     println!("{}", file.display());
 }
 
-/// Runs a playlist save as a job on its own Jobs, recording every state the listener gets.
+/// Runs a playlist save as a job on its own Jobs, the way the app will: the runner is
+/// registered with the folders, the job started with params. Records every state.
 fn run_as_job(link: &str, name: &str) -> (Jobs, Arc<Mutex<Vec<JobState>>>, u64) {
     setup();
     let dir = folder(name);
     let jobs = Jobs::new(2);
+    jobs.register("playlist", move |job, params| {
+        playlists::run_job(job, &dir.join("library.db"), &dir, params)
+    });
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = seen.clone();
     jobs.set_listener(move |state| sink.lock().unwrap().push(state));
-    let link = link.to_owned();
-    let id = jobs.start("playlist", &link.clone(), move |job| {
-        playlists::run(job, &dir.join("library.db"), &dir, &link, &options())
-    });
+    let id = jobs
+        .start("playlist", link, &playlists::job_params(link, &options()))
+        .unwrap();
     (jobs, seen, id)
 }
 
