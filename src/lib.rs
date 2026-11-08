@@ -25,5 +25,7 @@ pub mod player;
 #[cfg(feature = "playlists")]
 pub mod playlists;
 pub mod problem;
+#[cfg(feature = "player")]
+pub mod queue;
 #[cfg(feature = "ytdlp")]
 pub mod ytdlp;

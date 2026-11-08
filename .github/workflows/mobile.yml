@@ -69,9 +69,9 @@ jobs:
           export AR_x86_64_linux_android="$bin/llvm-ar"
           export PYO3_PYTHON=python3
           export PYO3_CROSS_LIB_DIR="$PWD/target/android/prefix/lib"
-          cargo test --no-run --features playlists,player --target x86_64-linux-android --lib --test ytdlp --test playlists --test api --test api_lazy --test recovery --test player \
+          cargo test --no-run --features playlists,player --target x86_64-linux-android --lib --test ytdlp --test playlists --test api --test api_lazy --test recovery --test player --test queue \
             --message-format=json > build.json
-          python3 scripts/test_binaries.py build.json elsewhere ytdlp playlists api api_lazy recovery player
+          python3 scripts/test_binaries.py build.json elsewhere ytdlp playlists api api_lazy recovery player queue
           # Runs a test program on the emulator with the phone Python, and ffmpeg on PATH:
           #   run-tests.sh <elsewhere-tests|ytdlp-tests|...> [test arguments]
           cat > run-tests.sh <<'SCRIPT'
@@ -113,14 +113,16 @@ jobs:
             adb push target/android/libs/x86_64/libffmpeg.so /data/local/tmp/elsewhere/bin/ffmpeg
             adb push target/android/libs/x86_64/libffprobe.so /data/local/tmp/elsewhere/bin/ffprobe
             adb push tests/media /data/local/tmp/elsewhere/
-            adb push elsewhere-tests ytdlp-tests playlists-tests api-tests api_lazy-tests recovery-tests player-tests run-tests.sh /data/local/tmp/elsewhere/
-            adb shell chmod 755 /data/local/tmp/elsewhere/player-tests /data/local/tmp/elsewhere/elsewhere-tests /data/local/tmp/elsewhere/recovery-tests /data/local/tmp/elsewhere/ytdlp-tests /data/local/tmp/elsewhere/playlists-tests /data/local/tmp/elsewhere/api-tests /data/local/tmp/elsewhere/api_lazy-tests /data/local/tmp/elsewhere/bin/ffmpeg /data/local/tmp/elsewhere/bin/ffprobe
+            adb push elsewhere-tests ytdlp-tests playlists-tests api-tests api_lazy-tests recovery-tests player-tests queue-tests run-tests.sh /data/local/tmp/elsewhere/
+            adb shell chmod 755 /data/local/tmp/elsewhere/player-tests /data/local/tmp/elsewhere/queue-tests /data/local/tmp/elsewhere/elsewhere-tests /data/local/tmp/elsewhere/recovery-tests /data/local/tmp/elsewhere/ytdlp-tests /data/local/tmp/elsewhere/playlists-tests /data/local/tmp/elsewhere/api-tests /data/local/tmp/elsewhere/api_lazy-tests /data/local/tmp/elsewhere/bin/ffmpeg /data/local/tmp/elsewhere/bin/ffprobe
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh elsewhere-tests --test-threads=4
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh recovery-tests
             # The media engine, again and again: timing bugs show up on a slow emulator.
             for run in 1 2 3; do adb shell sh /data/local/tmp/elsewhere/run-tests.sh player-tests --test-threads=4 || exit 1; done
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh player-tests --test-threads=1
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh player-tests --ignored --test-threads=1
+            for run in 1 2 3; do adb shell sh /data/local/tmp/elsewhere/run-tests.sh queue-tests --test-threads=4 || exit 1; done
+            adb shell sh /data/local/tmp/elsewhere/run-tests.sh queue-tests --test-threads=1
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh ytdlp-tests --test-threads=4
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh playlists-tests --test-threads=4
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh api-tests --test-threads=4
@@ -176,19 +178,19 @@ jobs:
           slice="$PWD/target/ios/Python.xcframework/ios-arm64_x86_64-simulator"
           export PYO3_PYTHON=python3
           export PYO3_CROSS_LIB_DIR="$slice/lib-arm64"
-          cargo test --no-run --features playlists,player --target aarch64-apple-ios-sim --lib --test ytdlp --test playlists --test api --test api_lazy --test recovery --test player \
+          cargo test --no-run --features playlists,player --target aarch64-apple-ios-sim --lib --test ytdlp --test playlists --test api --test api_lazy --test recovery --test player --test queue \
             --message-format=json > build.json
-          python3 scripts/test_binaries.py build.json elsewhere ytdlp playlists api api_lazy recovery player
+          python3 scripts/test_binaries.py build.json elsewhere ytdlp playlists api api_lazy recovery player queue
           # Lay them out like the app: Frameworks/ next to the programs, and one Python
           # home with the shared standard library plus this slice's C modules.
           mkdir -p run/Frameworks run/python/lib
-          mv elsewhere-tests ytdlp-tests playlists-tests api-tests api_lazy-tests recovery-tests player-tests run/
+          mv elsewhere-tests ytdlp-tests playlists-tests api-tests api_lazy-tests recovery-tests player-tests queue-tests run/
           cp -R "$slice/Python.framework" run/Frameworks/
           cp -R target/ios/mpv.xcframework/ios-arm64-simulator/mpv.framework run/Frameworks/
           cp -R target/ios/Python.xcframework/lib/python3.15 run/python/lib/
           cp -R "$slice/lib-arm64/python3.15/" run/python/lib/python3.15/
           find run -name '*.so' -exec codesign --force --sign - {} \;
-          codesign --force --sign - run/Frameworks/Python.framework run/Frameworks/mpv.framework run/player-tests run/elsewhere-tests run/recovery-tests run/ytdlp-tests run/playlists-tests run/api-tests run/api_lazy-tests
+          codesign --force --sign - run/Frameworks/Python.framework run/Frameworks/mpv.framework run/player-tests run/queue-tests run/elsewhere-tests run/recovery-tests run/ytdlp-tests run/playlists-tests run/api-tests run/api_lazy-tests
 
       - name: Run the tests in the simulator
         run: |
@@ -199,6 +201,8 @@ jobs:
           export SIMCTL_CHILD_PLAYER_TEST_MEDIA="$PWD/tests/media"
           for run in 1 2 3; do xcrun simctl spawn "$UDID" "$PWD/run/player-tests" --test-threads=4 || exit 1; done
           xcrun simctl spawn "$UDID" "$PWD/run/player-tests" --test-threads=1
+          for run in 1 2 3; do xcrun simctl spawn "$UDID" "$PWD/run/queue-tests" --test-threads=4 || exit 1; done
+          xcrun simctl spawn "$UDID" "$PWD/run/queue-tests" --test-threads=1
           xcrun simctl spawn "$UDID" "$PWD/run/ytdlp-tests" --test-threads=4
           xcrun simctl spawn "$UDID" "$PWD/run/playlists-tests" --test-threads=4
           xcrun simctl spawn "$UDID" "$PWD/run/api-tests" --test-threads=4
