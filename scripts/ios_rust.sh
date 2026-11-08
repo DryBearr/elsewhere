@@ -22,7 +22,8 @@ case $which in
   *) echo "usage: $0 [device|simulator|both] [release|debug]" >&2; exit 1 ;;
 esac
 
-flags=()
+# (No empty arrays: macOS bash 3.2 treats them as unset under set -u.)
+flags=(--profile dev)
 [ "$profile" = release ] && flags=(--release)
 export PYO3_PYTHON=${PYO3_PYTHON:-python3}
 export IPHONEOS_DEPLOYMENT_TARGET=16.0

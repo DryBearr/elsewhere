@@ -28,7 +28,8 @@ export "CC_$var=$toolchain/${target}26-clang" "AR_$var=$toolchain/llvm-ar"
 export PYO3_PYTHON=${PYO3_PYTHON:-python3}
 export PYO3_CROSS_LIB_DIR=$root/target/android/prefix/lib
 
-flags=()
+# (No empty arrays: macOS bash 3.2 treats them as unset under set -u.)
+flags=(--profile dev)
 [ "$profile" = release ] && flags=(--release)
 cargo rustc --lib --features ytdlp --target "$target" "${flags[@]}" --crate-type cdylib
 library=target/$target/$profile/libelsewhere.so
