@@ -111,9 +111,9 @@ meson_build mpv -Ddefault_library=shared "${MPV_COMMON[@]}" \
 grep -q "enabled features:.* gpl " "$out/mpv.log" && { echo "mpv was configured as GPL" >&2; exit 1; }
 
 "$toolchain/llvm-strip" --strip-unneeded -o "$out/libmpv.so" "$prefix/lib/libmpv.so"
-exported=$("$toolchain/llvm-readelf" --dyn-syms -W "$out/libmpv.so" | awk '$5 == "GLOBAL" && $7 != "UND" {print $8}')
-if echo "$exported" | grep -qv '^mpv_'; then
-  echo "libmpv.so exports more than mpv_*: $(echo "$exported" | grep -v '^mpv_' | head -3 | tr '\n' ' ')" >&2
+others=$("$toolchain/llvm-readelf" --dyn-syms -W "$out/libmpv.so" | awk '$5 == "GLOBAL" && $7 != "UND" {print $8}' | grep -v '^mpv_' || true)
+if [ -n "$others" ]; then
+  echo "libmpv.so exports more than mpv_*: $(echo "$others" | tr '\n' ' ' | cut -c1-200)" >&2
   exit 1
 fi
 needed=$("$toolchain/llvm-readelf" -d "$out/libmpv.so" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort | tr '\n' ' ')

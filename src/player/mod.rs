@@ -162,6 +162,10 @@ fn configure(mpv: &Handle) -> Result<(), Problem> {
         }
     }
     let mut required = vec![
+        // Software decoding until video goes to a screen. Hardware decoders crashed on
+        // Android when players were dropped while starting up (MediaCodec); they come
+        // back with the video surfaces, with their own stress tests.
+        ("hwdec", "no"),
         ("config", "no"),
         ("access-references", "no"),
         ("load-unsafe-playlists", "no"),
@@ -198,7 +202,6 @@ fn configure(mpv: &Handle) -> Result<(), Problem> {
         ("save-position-on-quit", "no"),
         ("autoload-files", "no"),
         ("audio-display", "no"),
-        ("hwdec", "auto-safe"),
         ("audio-client-name", "Elsewhere"),
     ];
     // Android: AudioTrack needs a Java VM handed to FFmpeg; AAudio and OpenSL ES do not.

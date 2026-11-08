@@ -145,15 +145,16 @@ CROSS
 </plist>
 PLIST
 
-  local exported
-  exported=$(nm -gU "$framework/mpv" | awk '{print $3}')
-  if echo "$exported" | grep -qv '^_mpv_'; then
-    echo "mpv.framework exports more than mpv_*: $(echo "$exported" | grep -v '^_mpv_' | head -3 | tr '\n' ' ')" >&2
+  local others
+  others=$(nm -gU "$framework/mpv" | awk '{print $3}' | grep -v '^_mpv_' || true)
+  if [ -n "$others" ]; then
+    echo "mpv.framework exports more than mpv_*: $(echo "$others" | tr '\n' ' ' | cut -c1-200)" >&2
     exit 1
   fi
   # Only the system's own libraries and frameworks may be needed.
-  if otool -L "$framework/mpv" | tail -n +2 | grep -v -e '@rpath/mpv.framework/mpv' -e ' /usr/lib/' -e ' /System/Library/'; then
-    echo "mpv.framework needs a library iOS does not have (above)" >&2
+  others=$(otool -L "$framework/mpv" | tail -n +2 | grep -vE '^[[:space:]]*(@rpath/mpv.framework/mpv|/usr/lib/|/System/Library/)' || true)
+  if [ -n "$others" ]; then
+    echo "mpv.framework needs libraries iOS does not have: $others" >&2
     exit 1
   fi
   echo "$stamp" > "$out/stamp"
