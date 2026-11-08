@@ -80,7 +80,7 @@ fun JobCard(job: JobState, modifier: Modifier = Modifier) {
                 }
                 Text(transfer(item.bytes, item.totalBytes, item.speed, item.eta), style = MaterialTheme.typography.bodySmall)
             }
-            job.lastError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+            job.lastError?.let { Text(it.text, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
             Row {
                 when (job.status) {
                     JobStatus.QUEUED, JobStatus.RUNNING -> TextButton({ JobsStore.cancel(job.id) }) { Text("Cancel") }

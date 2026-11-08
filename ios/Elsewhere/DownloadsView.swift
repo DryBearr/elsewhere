@@ -44,7 +44,7 @@ struct JobRow: View {
                 Text(transfer(item)).font(.caption2).foregroundStyle(.secondary)
             }
             if let error = job.lastError {
-                Text(error).font(.caption).foregroundStyle(.red)
+                Text(error.text).font(.caption).foregroundStyle(.red)
             }
             HStack(spacing: 16) {
                 switch job.status {

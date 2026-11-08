@@ -9,6 +9,7 @@ import java.io.InputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import uniffi.elsewhere.ApiException
 import uniffi.elsewhere.Folders
 import uniffi.elsewhere.PythonBundle
 import uniffi.elsewhere.setJobListener
@@ -44,11 +45,15 @@ object Core {
             startCore(folders, AssetBundle(context.applicationContext))
             setJobListener(JobsStore)
         } catch (e: Exception) {
-            startError = e.message ?: e.toString()
+            startError = describe(e)
             Log.e("Elsewhere", "the core did not start", e)
         }
     }
 }
+
+/** What to show for a failed call: the core's problem text, or the exception's message. */
+fun describe(error: Throwable): String =
+    (error as? ApiException.Failed)?.problem?.text ?: error.message ?: error.toString()
 
 /** Hands the APK's python.tar to the core, piece by piece, when it first needs Python. */
 private class AssetBundle(private val context: Context) : PythonBundle {

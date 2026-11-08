@@ -4,10 +4,13 @@ A Rust core with a native app on each phone:
 
 ```
 src/                Rust core, shared by both apps
-  api.rs            everything the apps can call (UniFFI makes the Kotlin and Swift bindings)
+  api/              everything the apps can call (UniFFI makes the Kotlin and Swift bindings)
   ytdlp/            yt-dlp through embedded Python (feature `ytdlp`)
   playlists/        save YouTube / YouTube Music playlists into the library (feature `playlists`)
   jobs/             runs long work in the background and reports exact status to the app
+  problem.rs        what a failure means for people: kind, text, detail, retry
+  health.rs         supervised parts that restart themselves; says when the app must restart
+  logs.rs           the core's log, on the phone only
   db.rs             the library database (SQLite)
   phone.rs          what phones need around yt-dlp: unpack Python, link ffmpeg, environment
 android/            Kotlin + Jetpack Compose app (Gradle)
@@ -19,9 +22,11 @@ How the apps use the core:
 
 - **Start:** `start(folders, python_bundle)` runs first at app start (`ElsewhereApplication` / `ElsewhereApp.init`). It is cheap; Python and yt-dlp start on the first job or call that needs them (Android hands over `python.tar` through `PythonBundle` then). `core_status()` says what is loaded.
 - **Jobs:** one `JobsStore` per app (`JobsStore.kt`, `JobsStore.swift`) is the job listener. It keeps the newest revision of each job and every screen reads it from there; calls into the core run off the UI thread. Screens: Downloads (job cards with Cancel / Resume / Discard / Retry / Remove, and each job's log), Add (save a playlist, run a demo job), Library.
-- **Self-test:** debug builds log every job state the store receives; `scripts/selftest_android.sh` and `scripts/selftest_ios.sh` kill a demo job halfway, check it comes back Interrupted, resume it to Done (store equal to core), discard another, and start yt-dlp lazily, on the emulator and simulator.
+- **Errors:** every failing call throws one `Problem` (Kotlin `ApiException.Failed`, Swift `ApiError.Failed`), and a job's `lastError` is the same `Problem`: `kind`, `text` for the screen, `detail` for the log and `retry` for a "Try again" button.
+- **Restart:** `core_health()` says whether a part of the core broke for good. Android then restarts itself (`Health.kt`: checked every 30 s and after a job fails with a bug; at most once per 10 minutes). iOS cannot restart itself; `Core.needsRestart` tells the app to ask for it.
+- **Self-test:** debug builds log every job state the store receives; `scripts/selftest_android.sh` and `scripts/selftest_ios.sh` kill a demo job halfway, check it comes back Interrupted, resume it to Done (store equal to core), discard another, and start yt-dlp lazily, on the emulator and simulator. On Android it also breaks the core on purpose and checks that the app comes back as a new process.
 
-Plugging a feature in or out: a module in `src/` (with a feature flag when it carries weight), its section in `api.rs`, and one screen file per app (`android/.../XScreen.kt`, `ios/Elsewhere/XView.swift`), listed with one line in `MainActivity.kt` and `ElsewhereApp.swift`.
+Plugging a feature in or out: a module in `src/` (with a feature flag when it carries weight), its file in `src/api/`, and one screen file per app (`android/.../XScreen.kt`, `ios/Elsewhere/XView.swift`), listed with one line in `MainActivity.kt` and `ElsewhereApp.swift`.
 
 ## yt-dlp module
 
@@ -68,6 +73,20 @@ Phones: both carry their own Python (the official CPython 3.15 builds from pytho
 - **Sudden close:** `Jobs::open(db)` keeps jobs in the library database (migration 0003). The delivery thread saves each change and new log line in one transaction before it tells the app. On the next start, finished jobs come back as history (the newest 200) and unfinished ones as **Interrupted**: the app offers `resume(id)` (runs it again from the start with the same params) or `discard(id)` (ends it as Cancelled). Failed jobs can be resumed too, as a retry.
 
 A feature plugs in with one line, `jobs.register(kind, runner)`, then starts jobs with `jobs.start(kind, title, params)`. Params are text the runner understands (playlists use `playlists::job_params(link, options)` and `playlists::run_job`). A runner must be safe to run again with the same params, because resuming does exactly that; playlists skip saved items and yt-dlp continues partial files.
+
+## Errors and recovery
+
+Nothing leaves the phone: no crash reports, no telemetry. The core heals what it can by itself and keeps a log on the device.
+
+- **One error model:** modules keep their own errors; at the edges (API, job, item) they become a `Problem` through `problem.rs`, so the same failure looks and behaves the same everywhere. Kinds: Input, Unavailable, Network, Storage, Setup, Cancelled, Bug.
+- **Retries:** only Network problems are tried again by themselves, 3 more times after 2, 10 and 30 s (`problem::with_retries`). Playlists retry the listing and each item; the job log shows each new try.
+- **Supervised parts:** the jobs delivery thread and the watchdog run under `health::supervise`. A crashed part restarts after 1, 5, 30 s; 5 crashes within 10 minutes make it Broken. After a restart, delivery sends and saves everything again, so nothing is lost.
+- **Database:** a failed save reopens the connection and tries again next round; 5 failures in a row make the store Broken. The app keeps seeing job states meanwhile.
+- **Watchdog:** a running job with no sign of life for 10 minutes is interrupted (playlists then try that item again); still nothing after 60 s, and the job fails as a Bug and the core asks for a restart. yt-dlp's chatter counts as life (`Job::keep_alive`). JavaScript challenges stop after 120 s.
+- **Log:** `<data>/logs/elsewhere.log`, one JSON object per line (time, level, area, job, item, message, detail). It rotates at 512 KB into `elsewhere.1.log`, so it stays under about 1 MB. Every panic writes `crash-<time>.txt` with its backtrace. There is no log screen yet.
+- **Restart:** the database is the truth and the app's start is the recovery path, so restarting (Android does it by itself) is always safe.
+
+Tests break things on purpose: delivery crashes, failing saves, a stuck and a stalled job (`src/jobs/tests.rs`), a server that fails twice or always (`tests/playlists.rs`), log rotation and crash notes (`tests/recovery.rs`). The Mobile workflow runs them on the emulator and simulator too.
 
 ## Playlists module
 

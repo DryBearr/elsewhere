@@ -3,6 +3,8 @@
     ElsewhereJobs: STATE id=3 rev=7 status=RUNNING done=2 failed=0 total=20
     ElsewhereJobs: FINAL id=3 status=DONE done=19 failed=1 log=4 match=true
     ElsewhereJobs: YTDLP 2026.10.26
+    ElsewhereJobs: BROKEN pid=4120
+    ElsewhereJobs: RESTARTED pid=4188
 
 Usage (checks are case-insensitive about the status):
 
@@ -10,6 +12,7 @@ Usage (checks are case-insensitive about the status):
     check_selftest.py <log> interrupted
     check_selftest.py <log> final <status> [<done> <failed>]
     check_selftest.py <log> ytdlp
+    check_selftest.py <log> restarted
     check_selftest.py <log> revisions
 
 Exits 0 when the check holds, 1 when it does not hold (yet; the scripts keep waiting),
@@ -24,7 +27,7 @@ FINISHED = {'done', 'failed', 'cancelled'}
 
 
 def read(path):
-    states, finals, versions, errors = [], [], [], []
+    states, finals, versions, errors, pids = [], [], [], [], {}
     with open(path, errors='replace') as log:
         for line in log:
             if 'ElsewhereJobs' not in line:
@@ -36,9 +39,11 @@ def read(path):
                 finals.append(fields)
             elif ' YTDLP ' in line:
                 versions.append(line.split(' YTDLP ', 1)[1].strip())
+            elif ' BROKEN ' in line or ' RESTARTED ' in line:
+                pids['broken' if ' BROKEN ' in line else 'restarted'] = fields.get('pid')
             elif ' ERROR ' in line:
                 errors.append(line.strip())
-    return states, finals, versions, errors
+    return states, finals, versions, errors, pids
 
 
 def main():
@@ -46,7 +51,7 @@ def main():
         print(__doc__)
         return 2
     path, check, args = sys.argv[1], sys.argv[2], sys.argv[3:]
-    states, finals, versions, errors = read(path)
+    states, finals, versions, errors, pids = read(path)
     if errors:
         print('\n'.join(errors))
         return 3
@@ -70,6 +75,10 @@ def main():
                 return 3
             return 0
         return 1
+    if check == 'restarted':
+        # A new process came up after the broken one.
+        broken, restarted = pids.get('broken'), pids.get('restarted')
+        return 0 if broken and restarted and broken != restarted else 1
     if check == 'ytdlp':
         return 0 if any('.' in version for version in versions) else 1
     if check == 'revisions':

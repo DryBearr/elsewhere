@@ -2,7 +2,8 @@
 # Checks the job path through the real Android app on an emulator (adb connected):
 #   1. a demo job is killed halfway, 2. comes back Interrupted, 3. Resume ends it Done
 #   with exact counts and the screen equal to the core; 4-5. another is discarded and
-#   ends Cancelled; 6. yt-dlp starts lazily inside the app (Python from the APK).
+#   ends Cancelled; 6. yt-dlp starts lazily inside the app (Python from the APK);
+#   7. a broken core makes the app restart itself (a new process comes up).
 # The app's SelfTest (debug builds) logs what its JobsStore receives; check_selftest.py
 # checks it.
 #
@@ -66,6 +67,9 @@ expect 5-discard final cancelled
 stop
 launch ytdlp
 expect 6-ytdlp ytdlp
+stop
+launch broken
+expect 7-broken restarted
 stop
 adb shell run-as "$package" files/bin/ffmpeg -hide_banner -version | head -1
 echo "The job path works in the Android app."

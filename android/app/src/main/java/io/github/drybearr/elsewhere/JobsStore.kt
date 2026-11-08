@@ -9,6 +9,7 @@ import kotlinx.coroutines.launch
 import uniffi.elsewhere.JobListener
 import uniffi.elsewhere.JobState
 import uniffi.elsewhere.JobStatus
+import uniffi.elsewhere.ProblemKind
 import uniffi.elsewhere.cancelJob
 import uniffi.elsewhere.discardJob
 import uniffi.elsewhere.forgetJob
@@ -30,6 +31,8 @@ object JobsStore : JobListener {
             if (old != null && old.revision >= job.revision) jobs else jobs + (job.id to job)
         }
         SelfTest.onJob(job)
+        // A bug may have left a part broken: see whether the app must restart.
+        if (job.status == JobStatus.FAILED && job.lastError?.kind == ProblemKind.BUG) Health.check()
     }
 
     fun cancel(id: Long) = act("cancel") { cancelJob(id) }
@@ -48,7 +51,7 @@ object JobsStore : JobListener {
             try {
                 call()
             } catch (e: Exception) {
-                Log.w("Elsewhere", "$name failed: ${e.message}")
+                Log.w("Elsewhere", "$name failed: ${describe(e)}")
             }
         }
     }
