@@ -45,8 +45,8 @@ object SelfTest {
         Core.io.launch {
             try {
                 when (mode) {
-                    // 20 items of 1.5 s: long enough to be killed halfway on a slow emulator.
-                    "demo" -> startDemoJob(DemoOptions(20u, 1500u, 3u, 2u))
+                    // 20 items of 4 s: still running when killed, even when the log arrives late.
+                    "demo" -> startDemoJob(DemoOptions(20u, 4000u, 3u, 2u))
                     // Runs for minutes: it is still running when the app is killed.
                     "long-demo" -> startDemoJob(DemoOptions(200u, 1000u, null, null))
                     "resume" -> interrupted().forEach { resumeJob(it.id) }

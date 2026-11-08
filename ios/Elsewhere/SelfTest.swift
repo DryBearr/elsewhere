@@ -19,8 +19,8 @@ enum SelfTest {
             do {
                 switch mode {
                 case "demo":
-                    // 20 items of 1.5 s: long enough to be killed halfway on a slow simulator.
-                    _ = try startDemoJob(options: DemoOptions(items: 20, itemMs: 1500, failAt: 3, warnAt: 2))
+                    // 20 items of 4 s: still running when killed, even when the log arrives late.
+                    _ = try startDemoJob(options: DemoOptions(items: 20, itemMs: 4000, failAt: 3, warnAt: 2))
                 case "long-demo":
                     // Runs for minutes: it is still running when the app is killed.
                     _ = try startDemoJob(options: DemoOptions(items: 200, itemMs: 1000, failAt: nil, warnAt: nil))
