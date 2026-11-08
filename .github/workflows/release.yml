@@ -81,6 +81,19 @@ jobs:
       - name: Build ffmpeg for Android
         run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_ffmpeg.sh aarch64
 
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv/aarch64
+          key: mpv-aarch64-${{ hashFiles('scripts/android_mpv.sh', 'scripts/mpv_sources.sh') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv/sources
+          key: mpv-sources-${{ hashFiles('scripts/mpv_sources.sh') }}
+
+      - name: Build libmpv for Android
+        run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_mpv.sh aarch64
+
       - name: Build the Rust core for Android
         run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_rust.sh aarch64 release
 
@@ -114,10 +127,23 @@ jobs:
       - name: Install iOS build tools
         run: |
           rustup target add aarch64-apple-ios
-          brew install xcodegen
+          brew install xcodegen pkgconf
 
       - name: Bundle Python and yt-dlp
         run: python3 scripts/mobile_python.py ios
+
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv-ios
+          key: mpv-ios-device-${{ hashFiles('scripts/ios_mpv.sh', 'scripts/mpv_sources.sh') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv-ios/sources
+          key: mpv-ios-sources-${{ hashFiles('scripts/mpv_sources.sh') }}
+
+      - name: Build libmpv for iOS
+        run: scripts/ios_mpv.sh device
 
       - name: Build the Rust core for iOS
         run: scripts/ios_rust.sh device release

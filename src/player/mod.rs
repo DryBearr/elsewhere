@@ -147,10 +147,26 @@ fn player_problem(text: &str, detail: String) -> Problem {
 /// from being made (they keep it local and quiet); the second list may be missing from
 /// older mpv versions.
 fn configure(mpv: &Handle) -> Result<(), Problem> {
+    // Scripts and yt-dlp: off. A build without scripting (the phone builds) does not even
+    // have these options, which is just as safe.
+    for (name, value) in [("load-scripts", "no"), ("ytdl", "no")] {
+        match mpv.set_option(name, value) {
+            Ok(()) => {}
+            Err(code) if code == mpv::OPTION_NOT_FOUND => {}
+            Err(code) => {
+                return Err(player_problem(
+                    "The player could not start.",
+                    format!("option {name}={value}: {}", mpv.error_text(code)),
+                ));
+            }
+        }
+    }
     let mut required = vec![
+        // Software decoding until video goes to a screen. Hardware decoders crashed on
+        // Android when players were dropped while starting up (MediaCodec); they come
+        // back with the video surfaces, with their own stress tests.
+        ("hwdec", "no"),
         ("config", "no"),
-        ("load-scripts", "no"),
-        ("ytdl", "no"),
         ("access-references", "no"),
         ("load-unsafe-playlists", "no"),
         ("idle", "yes"),
@@ -186,9 +202,18 @@ fn configure(mpv: &Handle) -> Result<(), Problem> {
         ("save-position-on-quit", "no"),
         ("autoload-files", "no"),
         ("audio-display", "no"),
-        ("hwdec", "auto-safe"),
         ("audio-client-name", "Elsewhere"),
     ];
+    // Android: AudioTrack needs a Java VM handed to FFmpeg; AAudio and OpenSL ES do not.
+    #[cfg(target_os = "android")]
+    if !NULL_OUTPUT.load(Ordering::SeqCst) {
+        mpv.set_option("ao", "aaudio,opensles").map_err(|code| {
+            player_problem(
+                "The player could not start.",
+                format!("option ao: {}", mpv.error_text(code)),
+            )
+        })?;
+    }
     for (name, value) in optional {
         if let Err(code) = mpv.set_option(name, value)
             && code != mpv::OPTION_NOT_FOUND

@@ -3,7 +3,8 @@
 //! small, stable part of mpv's C API (client.h, API version 2), declared here by hand.
 //!
 //! Which library: the file named by ELSEWHERE_LIBMPV (desktop development), else the
-//! platform's usual name (libmpv.so on Android and Linux, libmpv.2.dylib on macOS).
+//! platform's usual name (libmpv.so on Android and Linux, mpv.framework on iOS,
+//! libmpv.2.dylib on macOS).
 
 use std::ffi::{CStr, CString, c_char, c_int, c_ulong, c_void};
 use std::sync::OnceLock;
@@ -115,7 +116,10 @@ unsafe impl Sync for Api {}
 
 fn library_names() -> Vec<String> {
     let mut names: Vec<String> = std::env::var("ELSEWHERE_LIBMPV").into_iter().collect();
-    let platform: &[&str] = if cfg!(target_os = "macos") {
+    let platform: &[&str] = if cfg!(target_os = "ios") {
+        // Embedded by the app (scripts/ios_mpv.sh); test programs have it next to them.
+        &["@rpath/mpv.framework/mpv"]
+    } else if cfg!(target_os = "macos") {
         &[
             "libmpv.2.dylib",
             "libmpv.dylib",

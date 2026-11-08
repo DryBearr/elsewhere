@@ -56,7 +56,8 @@ if [ "$(cat "$out/stamp" 2>/dev/null)" != "$stamp" ]; then
   tarball=$work/ffmpeg-$VERSION.tar.xz
   if [ ! -f "$tarball" ] || ! echo "$SHA256  $tarball" | sha256sum -c --quiet; then
     echo "Downloading ffmpeg $VERSION"
-    curl -fsSL "https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz" -o "$tarball"
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 \
+      "https://ffmpeg.org/releases/ffmpeg-$VERSION.tar.xz" -o "$tarball"
     echo "$SHA256  $tarball" | sha256sum -c --quiet
   fi
   rm -rf "$work/src" "$work/build-$arch" "$out"

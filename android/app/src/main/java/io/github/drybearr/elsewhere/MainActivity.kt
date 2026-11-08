@@ -41,7 +41,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         if (savedInstanceState == null) {
-            SelfTest.run(intent?.getStringExtra("selftest"), intent?.getBooleanExtra(Health.RESTARTED, false) == true)
+            SelfTest.run(applicationContext, intent?.getStringExtra("selftest"), intent?.getBooleanExtra(Health.RESTARTED, false) == true)
         }
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {

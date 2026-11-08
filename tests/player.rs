@@ -1,6 +1,7 @@
 //! Tests for src/player with the real libmpv, without a window or sound (null outputs: video
 //! is still decoded). The media in tests/media are 2 s long and tiny. On a desktop without
 //! a system libmpv, point ELSEWHERE_LIBMPV at one (for example Homebrew's libmpv.so.2).
+//! On an emulator or simulator, PLAYER_TEST_MEDIA names the copy of tests/media.
 
 use std::fs;
 use std::path::PathBuf;
@@ -13,7 +14,9 @@ use elsewhere::player::{self, Player, PlayerState, Status};
 use elsewhere::problem::Kind;
 
 fn media_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/media")
+    std::env::var_os("PLAYER_TEST_MEDIA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/media"))
 }
 
 /// A folder for files made by the tests (broken files, links).
@@ -21,11 +24,21 @@ fn scratch() -> PathBuf {
     std::env::temp_dir().join(format!("elsewhere-player-{}", std::process::id()))
 }
 
+/// A real media file outside the allowed folders.
+fn outside() -> PathBuf {
+    std::env::temp_dir()
+        .join(format!("elsewhere-outside-{}", std::process::id()))
+        .join("secret.mp4")
+}
+
 fn setup() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let _ = fs::remove_dir_all(scratch());
         fs::create_dir_all(scratch()).unwrap();
+        let secret = outside();
+        fs::create_dir_all(secret.parent().unwrap()).unwrap();
+        fs::copy(media_dir().join("clip.mp4"), &secret).unwrap();
         player::set_null_output(true);
         player::allow_folders(&[media_dir(), scratch()]);
     });
@@ -207,23 +220,31 @@ fn speed_and_volume_stay_in_range() {
 #[test]
 fn only_local_files_in_the_allowed_folders_open() {
     let (player, _seen) = new_player();
-    let outside = scratch().join("outside-link.mp4");
-    let _ = fs::remove_file(&outside);
-    std::os::unix::fs::symlink("/etc/hostname", &outside).unwrap();
+    let link_out = scratch().join("outside-link.mp4");
+    let _ = fs::remove_file(&link_out);
+    std::os::unix::fs::symlink(outside(), &link_out).unwrap();
+    let secret = outside();
+    let dir_name = secret
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
     let inside = scratch().join("inside-link.mp4");
     let _ = fs::remove_file(&inside);
     std::os::unix::fs::symlink(media_dir().join("clip.mp4"), &inside).unwrap();
 
     for (path, kind) in [
         ("https://example.com/video.mp4".to_owned(), Kind::Input),
-        ("file:///etc/hostname".to_owned(), Kind::Input),
+        (format!("file://{}", secret.display()), Kind::Input),
         ("clip.mp4".to_owned(), Kind::Input),
-        ("/etc/hostname".to_owned(), Kind::Input),
+        (secret.to_str().unwrap().to_owned(), Kind::Input),
         (
-            format!("{}/../../Cargo.toml", media_dir().display()),
+            format!("{}/../{dir_name}/secret.mp4", scratch().display()),
             Kind::Input,
         ),
-        (outside.to_str().unwrap().to_owned(), Kind::Input),
+        (link_out.to_str().unwrap().to_owned(), Kind::Input),
         (media_dir().to_str().unwrap().to_owned(), Kind::Input),
         (media("missing.mp4"), Kind::Unavailable),
     ] {
@@ -387,6 +408,7 @@ fn players_come_and_go_quickly_and_a_bad_listener_breaks_nothing() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 #[ignore = "counts the process's threads, so it must run alone: --ignored --test-threads=1"]
 fn dropped_players_leave_no_threads_behind() {
     setup();
@@ -406,4 +428,138 @@ fn dropped_players_leave_no_threads_behind() {
         after <= before + 2,
         "{before} threads before, {after} after"
     );
+}
+
+#[test]
+fn a_storm_of_commands_from_many_threads_leaves_a_sane_player() {
+    let (player, seen) = new_player();
+    let player = Arc::new(player);
+    player.open(&media("clip.webm"), 0, true).unwrap();
+    wait_for(&player, &seen, "playing", status_is(Status::Playing));
+    let workers: Vec<_> = (0..4u64)
+        .map(|worker| {
+            let player = Arc::clone(&player);
+            thread::spawn(move || {
+                for step in 0..150u64 {
+                    // Errors are fine (for example while a file opens); panics and hangs are not.
+                    let _ = match (worker + step) % 6 {
+                        0 => player.seek(((step * 137) % 2200) as i64),
+                        1 => player.pause(),
+                        2 => player.play(),
+                        3 => player.set_speed(0.5 + (step % 7) as f64 * 0.5),
+                        4 => player.set_volume((step % 101) as f64),
+                        _ => player.seek(-1),
+                    };
+                    let state = player.state();
+                    assert!(state.position_ms <= 2100, "{state:?}");
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    player.set_speed(4.0).unwrap();
+    player.play().unwrap();
+    let end = final_state(&player, &seen);
+    assert_eq!(
+        (end.status, end.problem.clone()),
+        (Status::Ended, None),
+        "{end:?}"
+    );
+    let states = seen.lock().unwrap().clone();
+    assert!(
+        states
+            .windows(2)
+            .all(|pair| pair[0].revision < pair[1].revision)
+    );
+}
+
+#[test]
+fn opens_from_many_threads_end_with_one_of_them_open() {
+    let (player, seen) = new_player();
+    let player = Arc::new(player);
+    let names = ["clip.mp4", "clip.webm", "clip.mkv", "song.m4a", "song.opus"];
+    let workers: Vec<_> = (0..5)
+        .map(|worker| {
+            let player = Arc::clone(&player);
+            thread::spawn(move || {
+                for round in 0..10 {
+                    player
+                        .open(&media(names[(worker + round) % names.len()]), 0, false)
+                        .unwrap();
+                }
+            })
+        })
+        .collect();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    let open = wait_for(
+        &player,
+        &seen,
+        "paused on a file",
+        status_is(Status::Paused),
+    );
+    let file = open.file.clone().unwrap();
+    assert!(names.iter().any(|name| file.ends_with(name)), "{open:?}");
+    assert_eq!(open.problem, None);
+    // And it plays from there.
+    player.set_speed(4.0).unwrap();
+    player.play().unwrap();
+    assert_eq!(final_state(&player, &seen).status, Status::Ended);
+}
+
+#[test]
+fn open_and_stop_again_and_again() {
+    let (player, seen) = new_player();
+    for round in 0..40 {
+        player
+            .open(
+                &media(if round % 2 == 0 {
+                    "song.m4a"
+                } else {
+                    "clip.mkv"
+                }),
+                0,
+                true,
+            )
+            .unwrap();
+        if round % 3 == 0 {
+            wait_for(&player, &seen, "playing", status_is(Status::Playing));
+        }
+        player.stop().unwrap();
+        assert_eq!(player.state().status, Status::Idle);
+    }
+    thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        player.state().status,
+        Status::Idle,
+        "late events of stopped files change nothing"
+    );
+    player.open(&media("song.opus"), 0, true).unwrap();
+    player.set_speed(4.0).unwrap();
+    assert_eq!(final_state(&player, &seen).status, Status::Ended);
+}
+
+#[test]
+fn eight_players_play_at_once() {
+    let players: Vec<(Player, Seen)> = (0..8).map(|_| new_player()).collect();
+    let names = [
+        "clip.mp4",
+        "clip.webm",
+        "clip.mkv",
+        "song.m4a",
+        "song.opus",
+        "video-only.mp4",
+    ];
+    for (index, (player, _)) in players.iter().enumerate() {
+        player
+            .open(&media(names[index % names.len()]), 0, true)
+            .unwrap();
+    }
+    for (index, (player, seen)) in players.iter().enumerate() {
+        let end = final_state(player, seen);
+        assert_eq!(end.status, Status::Ended, "player {index}: {end:?}");
+    }
 }

@@ -3,7 +3,9 @@
 #   1. a demo job is killed halfway, 2. comes back Interrupted, 3. Resume ends it Done
 #   with exact counts and the screen equal to the core; 4-5. another is discarded and
 #   ends Cancelled; 6. yt-dlp starts lazily inside the app (Python from the APK);
-#   7. a broken core makes the app restart itself (a new process comes up).
+#   7. a broken core makes the app restart itself (a new process comes up);
+#   8. the media engine plays an audio file and a video file to their end through the
+#      real sound output, and refuses a file outside the media folder.
 # The app's SelfTest (debug builds) logs what its JobsStore receives; check_selftest.py
 # checks it.
 #
@@ -59,7 +61,7 @@ launch resume
 expect 3-resume final done 19 1
 expect 3-resume revisions
 stop
-launch demo
+launch long-demo
 expect 4-demo running 1
 stop
 launch discard
@@ -70,6 +72,9 @@ expect 6-ytdlp ytdlp
 stop
 launch broken
 expect 7-broken restarted
+stop
+launch player
+expect 8-player player song.m4a clip.webm
 stop
 adb shell run-as "$package" files/bin/ffmpeg -hide_banner -version | head -1
 echo "The job path works in the Android app."
