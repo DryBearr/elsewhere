@@ -539,3 +539,38 @@ fn a_saved_playlist_reads_back_from_the_library() {
         Some(ProblemKind::Unavailable)
     );
 }
+
+#[test]
+fn a_preview_before_saving() {
+    core();
+    let cancel = Arc::new(CancelToken::new());
+    let preview = api::preview_playlist(
+        format!("  {}  ", url("/playlist.html")),
+        Arc::clone(&cancel),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            preview.title.as_str(),
+            preview.is_playlist,
+            preview.available,
+            preview.generated,
+            preview.complete
+        ),
+        ("Test Playlist", true, 2, false, true)
+    );
+    assert!(preview.unavailable.is_empty() && preview.suggested_limit.is_none());
+    assert_eq!(
+        kind_of(&api::preview_playlist(
+            "not a link".to_owned(),
+            Arc::clone(&cancel)
+        )),
+        Some(ProblemKind::Input)
+    );
+    let stopped = Arc::new(CancelToken::new());
+    stopped.cancel();
+    assert_eq!(
+        kind_of(&api::preview_playlist(url("/playlist.html"), stopped)),
+        Some(ProblemKind::Cancelled)
+    );
+}

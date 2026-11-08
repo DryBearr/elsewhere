@@ -55,6 +55,63 @@ pub fn save_playlist(link: String, options: PlaylistOptions) -> Result<i64, ApiE
     Ok(id as i64)
 }
 
+/// An entry of a playlist that cannot be saved.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct UnavailableEntry {
+    /// Where it is in the playlist (1-based).
+    pub position: u32,
+    pub title: String,
+    /// Why, for people: "removed or made private on YouTube", "for channel members only".
+    pub reason: String,
+}
+
+/// What a link holds, before saving it: for showing the size and offering a limit.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PlaylistPreview {
+    pub title: String,
+    pub is_playlist: bool,
+    /// Made by YouTube (a Mix): it can go on and on, so offer a limit.
+    pub generated: bool,
+    /// Entries that can be saved: the most a limit can usefully be.
+    pub available: u32,
+    pub unavailable: Vec<UnavailableEntry>,
+    /// False when the playlist is longer than the 1000 entries a preview reads.
+    pub complete: bool,
+    /// A limit to start with (generated playlists).
+    pub suggested_limit: Option<u32>,
+}
+
+/// Reads what a link holds without saving anything (starts yt-dlp if needed): its size,
+/// what cannot be saved and why, and whether YouTube made the playlist up.
+#[uniffi::export]
+pub fn preview_playlist(
+    link: String,
+    cancel: std::sync::Arc<super::CancelToken>,
+) -> Result<PlaylistPreview, ApiError> {
+    let link = link.trim();
+    check_link(link)?;
+    super::ytdlp::ensure()?;
+    let preview = playlists::preview(link, &cancel.0)?;
+    let small = |n: usize| n.min(u32::MAX as usize) as u32;
+    Ok(PlaylistPreview {
+        title: preview.title,
+        is_playlist: preview.is_playlist,
+        generated: preview.generated,
+        available: small(preview.available),
+        unavailable: preview
+            .unavailable
+            .into_iter()
+            .map(|gone| UnavailableEntry {
+                position: small(gone.position),
+                title: gone.title,
+                reason: gone.reason,
+            })
+            .collect(),
+        complete: preview.complete,
+        suggested_limit: preview.suggested_limit.map(small),
+    })
+}
+
 /// A web link: http(s), with a host.
 fn check_link(link: &str) -> Result<(), ApiError> {
     let rest = link

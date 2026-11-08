@@ -565,3 +565,186 @@ fn two_saves_of_the_same_playlist_at_once_both_succeed() {
         .unwrap();
     assert_eq!(collections, 1, "one playlist, not two");
 }
+
+fn collection_titles(db: &Path, source_like: &str) -> Vec<String> {
+    let db = Connection::open(db).unwrap();
+    let id: i64 = db
+        .query_row(
+            "SELECT id FROM collection WHERE name = ?1",
+            [source_like],
+            |row| row.get(0),
+        )
+        .unwrap();
+    collection_items(&dbpath(&db), id)
+        .into_iter()
+        .map(|(_, title)| title)
+        .collect()
+}
+
+fn dbpath(db: &Connection) -> std::path::PathBuf {
+    std::path::PathBuf::from(db.path().unwrap())
+}
+
+#[test]
+fn a_playlist_that_changed_since_it_was_saved() {
+    setup();
+    let dir = folder("changing");
+    let db = dir.join("library.db");
+    let save = || {
+        let (events, on_progress) = progress();
+        let saved = playlists::save(
+            &db,
+            &dir,
+            &url("/changing-playlist.html"),
+            &options(),
+            on_progress,
+            &Cancel::new(),
+        )
+        .unwrap();
+        let notes: Vec<String> = events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                Progress::Note { message } => Some(message.clone()),
+                _ => None,
+            })
+            .collect();
+        (saved, notes)
+    };
+
+    common::set_changing_playlist(1);
+    let (first, notes) = save();
+    assert_eq!((first.items.len(), first.dropped), (3, 0));
+    assert!(notes.is_empty(), "{notes:?}");
+    let two = first
+        .items
+        .iter()
+        .find(|item| item.title == "Ch - Two")
+        .unwrap()
+        .file
+        .clone();
+
+    // "Two" left the playlist and the rest moved around: it leaves the playlist, its file
+    // and its library entry stay, and the person is told.
+    common::set_changing_playlist(2);
+    let (second, notes) = save();
+    assert_eq!(
+        (second.items.len(), second.failed.len(), second.dropped),
+        (2, 0, 1)
+    );
+    assert_eq!(
+        collection_titles(&db, "Changing Playlist"),
+        ["Ch - Three", "Ch - One"]
+    );
+    assert!(two.is_file(), "the file of the song that left stays");
+    let still: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM item WHERE title = 'Ch - Two'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(still, 1, "and so does its library entry");
+    assert!(
+        notes
+            .iter()
+            .any(|note| note.starts_with("1 item is no longer in this playlist")),
+        "{notes:?}"
+    );
+
+    // "Two" is listed again, but the site removed it: the copy saved before is kept.
+    common::set_changing_playlist(3);
+    let (third, _) = save();
+    assert_eq!(
+        (third.items.len(), third.failed.len(), third.dropped),
+        (3, 0, 0),
+        "{:?}",
+        third.failed
+    );
+    assert_eq!(
+        collection_titles(&db, "Changing Playlist"),
+        ["Ch - One", "Ch - Two", "Ch - Three"]
+    );
+    common::set_changing_playlist(1);
+}
+
+#[test]
+fn a_preview_says_what_a_link_holds() {
+    setup();
+    let preview = playlists::preview(&url("/playlist.html"), &Cancel::new()).unwrap();
+    assert_eq!(
+        (
+            preview.title.as_str(),
+            preview.is_playlist,
+            preview.available,
+            preview.complete,
+            preview.generated
+        ),
+        ("Test Playlist", true, 2, true, false)
+    );
+    assert!(preview.unavailable.is_empty());
+    assert_eq!(
+        preview.suggested_limit, None,
+        "only generated playlists get one"
+    );
+    let single = playlists::preview(&url("/Band%20-%20Hit.mp4"), &Cancel::new()).unwrap();
+    assert_eq!((single.is_playlist, single.available), (false, 1));
+    let problem = playlists::preview(&url("/missing.mp4"), &Cancel::new()).unwrap_err();
+    assert_eq!(problem.kind, Kind::Unavailable, "{problem:?}");
+    let cancel = Cancel::new();
+    cancel.cancel();
+    assert!(
+        playlists::preview(&url("/playlist.html"), &cancel)
+            .unwrap_err()
+            .is_cancelled()
+    );
+}
+
+#[test]
+fn a_limit_past_the_end_saves_everything_once() {
+    setup();
+    let dir = folder("limit-past-end");
+    let mut opts = options();
+    opts.limit = Some(500);
+    let saved = playlists::save(
+        &dir.join("library.db"),
+        &dir,
+        &url("/playlist.html"),
+        &opts,
+        |_| {},
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!((saved.items.len(), saved.unavailable.len()), (2, 0));
+}
+
+#[test]
+fn a_page_with_nothing_to_save_changes_nothing() {
+    setup();
+    let dir = folder("nothing-to-save");
+    let db = dir.join("library.db");
+    let problem = playlists::save(
+        &db,
+        &dir,
+        &url("/empty-page.html"),
+        &options(),
+        |_| {},
+        &Cancel::new(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(problem.kind, Kind::Input | Kind::Unavailable),
+        "{problem:?}"
+    );
+    assert!(!problem.retry, "{problem:?}");
+    assert!(!dir.join("Videos").exists(), "no folder made");
+    if db.exists() {
+        let lists: i64 = Connection::open(&db)
+            .unwrap()
+            .query_row("SELECT count(*) FROM collection", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lists, 0, "no playlist made");
+    }
+}

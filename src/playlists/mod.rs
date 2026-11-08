@@ -63,6 +63,11 @@ pub struct Saved {
     /// Every item now in the playlist, in order (new and already saved).
     pub items: Vec<SavedItem>,
     pub failed: Vec<Failed>,
+    /// Entries skipped because they cannot be saved (removed, private, ...).
+    pub unavailable: Vec<Unavailable>,
+    /// Items saved earlier that are no longer in the playlist: they left it, but their
+    /// files stay in the library.
+    pub dropped: usize,
 }
 
 #[derive(Debug)]
@@ -76,6 +81,38 @@ pub struct SavedItem {
     pub lyrics: Option<PathBuf>,
 }
 
+/// A playlist entry that cannot be saved, known from the listing alone (no download is
+/// tried): removed, private, members-only, not out yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unavailable {
+    /// Where it is in the playlist (1-based, counting every entry).
+    pub position: usize,
+    pub title: String,
+    /// Why, for people.
+    pub reason: String,
+}
+
+/// What a link holds, before saving it: for showing the size and offering a limit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Preview {
+    pub title: String,
+    pub is_playlist: bool,
+    /// Made by YouTube (a Mix, "radio"): it can go on and on, so save a limited number.
+    pub generated: bool,
+    /// Entries that can be saved: the largest useful limit.
+    pub available: usize,
+    pub unavailable: Vec<Unavailable>,
+    /// False when the playlist has more than the PREVIEW_ENTRIES that were read.
+    pub complete: bool,
+    /// A sensible limit to start with (generated playlists).
+    pub suggested_limit: Option<usize>,
+}
+
+/// How many entries `preview` reads at most.
+pub const PREVIEW_ENTRIES: usize = 1000;
+/// The limit offered first for a generated playlist.
+pub const GENERATED_LIMIT: usize = 50;
+
 #[derive(Debug)]
 pub struct Failed {
     pub position: usize,
@@ -86,10 +123,15 @@ pub struct Failed {
 /// Reported while `save` works.
 #[derive(Debug)]
 pub enum Progress {
-    /// The link was read: its title and how many items it has.
+    /// The link was read: its title, how many items will be saved, and how many cannot be.
     Listed {
         title: String,
         total: usize,
+        unavailable: usize,
+    },
+    /// Something about the whole playlist the person should know.
+    Note {
+        message: String,
     },
     Started {
         position: usize,
@@ -181,14 +223,53 @@ where
     };
     let alive = Arc::clone(&on_progress);
     let listing = problem::with_retries(
-        || list(url, options.limit, cancel, &alive),
+        || list_limited(url, options.limit, cancel, &alive),
         retrying(None),
         || cancel.is_cancelled(),
     )?;
+    if listing.entries.is_empty() {
+        // Nothing is made or changed: a playlist saved before keeps what it had.
+        return Err(Problem {
+            retry: false,
+            ..Problem::new(
+                problem::Kind::Unavailable,
+                "Nothing here can be saved: the playlist is empty, or everything in it was removed or made private.",
+                format!(
+                    "{url}: no saveable entries, {} unavailable",
+                    listing.unavailable.len()
+                ),
+            )
+        });
+    }
     on_progress(Progress::Listed {
         title: listing.title.clone(),
         total: listing.entries.len(),
+        unavailable: listing.unavailable.len(),
     });
+    if !listing.unavailable.is_empty() {
+        on_progress(Progress::Note {
+            message: format!(
+                "{} in this playlist cannot be saved and {} skipped:{}",
+                count(listing.unavailable.len(), "entry", "entries"),
+                if listing.unavailable.len() == 1 {
+                    "is"
+                } else {
+                    "are"
+                },
+                listing
+                    .unavailable
+                    .iter()
+                    .take(NOTED_UNAVAILABLE)
+                    .map(|gone| format!("\n#{} {}: {}", gone.position, gone.title, gone.reason))
+                    .collect::<String>()
+                    + if listing.unavailable.len() > NOTED_UNAVAILABLE {
+                        "\n…"
+                    } else {
+                        ""
+                    }
+            ),
+        });
+    }
 
     let category = match options.format {
         Format::Audio => "Music",
@@ -289,14 +370,23 @@ where
         }
     }
 
-    let collection_id = if listing.is_playlist {
-        Some(
+    let (collection_id, dropped) = if listing.is_playlist {
+        let (id, dropped) =
             record_collection(&mut db, category_id, &listing, cover.as_deref(), &items)
-                .map_err(db_problem)?,
-        )
+                .map_err(db_problem)?;
+        (Some(id), dropped)
     } else {
-        None
+        (None, 0)
     };
+    if dropped > 0 {
+        on_progress(Progress::Note {
+            message: format!(
+                "{} no longer in this playlist; {} files stay in the library.",
+                count(dropped, "item is", "items are"),
+                if dropped == 1 { "its" } else { "their" },
+            ),
+        });
+    }
     Ok(Saved {
         collection_id,
         title: listing.title,
@@ -304,7 +394,106 @@ where
         cover,
         items,
         failed,
+        unavailable: listing.unavailable,
+        dropped,
     })
+}
+
+/// Entries named one by one in the job's log, at most.
+const NOTED_UNAVAILABLE: usize = 20;
+
+fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// What the link holds, without saving anything: the size (for a limit), what cannot be
+/// saved, and whether YouTube made the playlist up (a Mix). Reads at most PREVIEW_ENTRIES.
+pub fn preview(url: &str, cancel: &Cancel) -> Result<Preview, Problem> {
+    let quiet: Arc<dyn Fn(Progress) + Send + Sync> = Arc::new(|_| {});
+    let listing = problem::with_retries(
+        || list(url, Some(PREVIEW_ENTRIES), cancel, &quiet),
+        |_, _, _| {},
+        || cancel.is_cancelled(),
+    )?;
+    let generated = listing.is_playlist && is_generated(&listing.id);
+    let available = listing.entries.len();
+    Ok(Preview {
+        title: listing.title,
+        is_playlist: listing.is_playlist,
+        generated,
+        available,
+        unavailable: listing.unavailable,
+        complete: listing.complete,
+        suggested_limit: generated.then(|| available.min(GENERATED_LIMIT)),
+    })
+}
+
+/// Playlists YouTube makes up from a song or a channel (Mixes, "radio"): they can go on and
+/// on. Their ids start with RD; RDCLAK ones are YouTube Music's own curated lists, which do
+/// end.
+pub fn is_generated(id: &str) -> bool {
+    id.starts_with("RD") && !id.starts_with("RDCLAK")
+}
+
+/// Why a listed entry cannot be saved, from the listing alone; None when it can.
+fn unavailable_reason(entry: &Value) -> Option<&'static str> {
+    let title = entry["title"].as_str().unwrap_or_default().trim();
+    if matches!(
+        title,
+        "[Deleted video]" | "[Private video]" | "[Unavailable video]"
+    ) {
+        return Some("removed or made private on YouTube");
+    }
+    match entry["availability"].as_str() {
+        Some("private") => return Some("private"),
+        Some("needs_auth") => return Some("needs signing in"),
+        Some("subscriber_only") => return Some("for channel members only"),
+        Some("premium_only") => return Some("for YouTube Premium only"),
+        _ => {}
+    }
+    match entry["live_status"].as_str() {
+        Some("is_upcoming") => Some("not out yet (a premiere or a scheduled stream)"),
+        Some("is_live") => Some("live right now; save it once the stream has ended"),
+        _ => None,
+    }
+}
+
+/// The listing for a save: with a limit, the first `limit` entries that can be saved
+/// (unavailable ones do not count), reading further when too many were unavailable.
+fn list_limited(
+    url: &str,
+    limit: Option<usize>,
+    cancel: &Cancel,
+    progress: &Arc<impl Fn(Progress) + Send + Sync + 'static + ?Sized>,
+) -> Result<Listing, Problem> {
+    let Some(limit) = limit else {
+        return list(url, None, cancel, progress);
+    };
+    let limit = limit.max(1);
+    let mut end = limit.saturating_add(LIMIT_SLACK);
+    for _ in 0..4 {
+        let mut listing = list(url, Some(end), cancel, progress)?;
+        if listing.entries.len() >= limit || listing.complete {
+            keep_first(&mut listing, limit);
+            return Ok(listing);
+        }
+        end = end.saturating_mul(4);
+    }
+    let mut listing = list(url, None, cancel, progress)?;
+    keep_first(&mut listing, limit);
+    Ok(listing)
+}
+
+/// Unavailable entries read beyond the limit, on top of it, so a few gone ones do not cut
+/// the save short.
+const LIMIT_SLACK: usize = 50;
+
+/// Keeps the first `limit` saveable entries, and the unavailable ones before the last kept.
+fn keep_first(listing: &mut Listing, limit: usize) {
+    listing.entries.truncate(limit);
+    if let Some(last) = listing.entries.last().map(|entry| entry.listed_at) {
+        listing.unavailable.retain(|gone| gone.position < last);
+    }
 }
 
 /// The playlist folders being saved into right now.
@@ -481,10 +670,11 @@ pub fn run(
 /// Turns one step of `save` into the job's state and log.
 fn report(job: &Job, progress: Progress) {
     match progress {
-        Progress::Listed { title, total } => {
+        Progress::Listed { title, total, .. } => {
             job.set_title(&title);
             job.set_total(total);
         }
+        Progress::Note { message } => job.log(Level::Warning, &message),
         Progress::Started { position, title } => job.item_started(position, &title),
         Progress::Downloading {
             done,
@@ -527,24 +717,30 @@ struct Listing {
     title: String,
     is_playlist: bool,
     entries: Vec<Entry>,
+    unavailable: Vec<Unavailable>,
+    /// Whether the listing reached the playlist's end (not cut by `end`).
+    complete: bool,
 }
 
 struct Entry {
+    /// Where it is in the playlist (1-based, counting every entry).
+    listed_at: usize,
     /// e.g. "Youtube:dQw4w9WgXcQ". Identifies the item across runs.
     source_id: String,
     title: String,
     url: String,
 }
 
+/// Reads a link's entries without downloading anything: at most `end` of them.
 fn list(
     url: &str,
-    limit: Option<usize>,
+    end: Option<usize>,
     cancel: &Cancel,
     progress: &Arc<impl Fn(Progress) + Send + Sync + 'static + ?Sized>,
 ) -> Result<Listing, Problem> {
-    let end = limit.map(|limit| limit.max(1).to_string());
+    let end_text = end.map(|end| end.max(1).to_string());
     let mut args = vec!["--flat-playlist", "--yes-playlist"];
-    if let Some(end) = &end {
+    if let Some(end) = &end_text {
         args.extend(["--playlist-end", end]);
     }
     let alive = Arc::clone(progress);
@@ -559,6 +755,7 @@ fn list(
 
     if info["_type"] != "playlist" {
         let entry = Entry {
+            listed_at: 1,
             source_id: source.clone(),
             title: title.clone(),
             url: text(&info, &["webpage_url", "original_url"]).unwrap_or_else(|| url.to_owned()),
@@ -569,34 +766,72 @@ fn list(
             title,
             is_playlist: false,
             entries: vec![entry],
+            unavailable: Vec::new(),
+            complete: true,
         });
     }
 
-    let entries = info["entries"]
+    let listed = info["entries"]
         .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            // YouTube lists link to watch pages; other sites may only give the media URL.
-            let url = text(entry, &["url", "webpage_url"])
-                .or_else(|| text(&entry["formats"][0], &["url"]))?;
-            let id = text(entry, &["id"]).unwrap_or_else(|| url.clone());
-            let extractor =
-                text(entry, &["ie_key", "extractor_key"]).unwrap_or_else(|| "url".to_owned());
-            Some(Entry {
-                source_id: format!("{extractor}:{id}"),
-                title: text(entry, &["title"]).unwrap_or_else(|| id.clone()),
-                url,
-            })
-        })
-        .collect();
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let (entries, unavailable) = split_entries(listed);
+    let complete = end.is_none_or(|end| listed.len() < end.max(1));
     Ok(Listing {
         source,
         id,
         title,
         is_playlist: true,
         entries,
+        unavailable,
+        complete,
     })
+}
+
+/// The entries that can be saved, and the ones that cannot (with why).
+fn split_entries(listed: &[Value]) -> (Vec<Entry>, Vec<Unavailable>) {
+    let mut entries = Vec::new();
+    let mut unavailable = Vec::new();
+    for (index, entry) in listed.iter().enumerate() {
+        let position = index + 1;
+        let title = text(entry, &["title"]);
+        if let Some(reason) = unavailable_reason(entry) {
+            unavailable.push(Unavailable {
+                position,
+                title: title.unwrap_or_else(|| "Untitled".to_owned()),
+                reason: reason.to_owned(),
+            });
+            continue;
+        }
+        // YouTube lists link to watch pages; other sites may only give the media URL.
+        let Some(url) =
+            text(entry, &["url", "webpage_url"]).or_else(|| text(&entry["formats"][0], &["url"]))
+        else {
+            unavailable.push(Unavailable {
+                position,
+                title: title.unwrap_or_else(|| "Untitled".to_owned()),
+                reason: "has no link to save".to_owned(),
+            });
+            continue;
+        };
+        let id = text(entry, &["id"]).unwrap_or_else(|| url.clone());
+        let extractor =
+            text(entry, &["ie_key", "extractor_key"]).unwrap_or_else(|| "url".to_owned());
+        // Sites with their own ids (YouTube) keep a video's id wherever it moves in a list.
+        // Generic pages number their entries by place, so the media link is what stays.
+        let stable = if matches!(extractor.as_str(), "Generic" | "HTML5MediaEmbed" | "url") {
+            url.clone()
+        } else {
+            id.clone()
+        };
+        entries.push(Entry {
+            listed_at: position,
+            source_id: format!("{extractor}:{stable}"),
+            title: title.unwrap_or_else(|| id.clone()),
+            url,
+        });
+    }
+    (entries, unavailable)
 }
 
 /// Saves the playlist's banner as `cover.<ext>`. A playlist without one is fine.
@@ -846,7 +1081,7 @@ fn record_collection(
     listing: &Listing,
     cover: Option<&Path>,
     items: &[SavedItem],
-) -> rusqlite::Result<i64> {
+) -> rusqlite::Result<(i64, usize)> {
     let tx = db.transaction()?;
     let collection_id: i64 = tx.query_row(
         "INSERT INTO collection (category_id, name, cover, source) VALUES (?1, ?2, ?3, ?4)
@@ -861,6 +1096,16 @@ fn record_collection(
         ],
         |row| row.get(0),
     )?;
+    // Items saved before that are not in the playlist any more leave it (their files and
+    // library entries stay).
+    let before: Vec<i64> = tx
+        .prepare("SELECT DISTINCT item_id FROM collection_item WHERE collection_id = ?1")?
+        .query_map([collection_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let dropped = before
+        .iter()
+        .filter(|id| !items.iter().any(|item| item.item_id == **id))
+        .count();
     tx.execute(
         "DELETE FROM collection_item WHERE collection_id = ?1",
         [collection_id],
@@ -872,7 +1117,7 @@ fn record_collection(
         )?;
     }
     tx.commit()?;
-    Ok(collection_id)
+    Ok((collection_id, dropped))
 }
 
 /// The rich part of an item, from yt-dlp's info JSON.
@@ -1173,6 +1418,7 @@ mod tests {
     #[test]
     fn music_fields_win_over_video_fields() {
         let entry = Entry {
+            listed_at: 1,
             source_id: "Youtube:x".to_owned(),
             title: "fallback".to_owned(),
             url: "u".to_owned(),
@@ -1200,6 +1446,7 @@ mod tests {
     #[test]
     fn music_videos_get_song_and_artist_from_title_and_channel() {
         let entry = Entry {
+            listed_at: 1,
             source_id: "Youtube:x".to_owned(),
             title: "x".to_owned(),
             url: "u".to_owned(),
@@ -1248,5 +1495,170 @@ mod tests {
         assert_eq!(clean_title("Song (Remix) (Lyric Video)"), "Song (Remix)");
         assert_eq!(clean_title("Song (feat. Guest)"), "Song");
         assert_eq!(clean_title("Unclosed (bracket"), "Unclosed (bracket");
+    }
+
+    fn listing_of(entries: Vec<Value>) -> Listing {
+        let (entries, unavailable) = split_entries(&entries);
+        Listing {
+            source: "Test:PL1".into(),
+            id: "PL1".into(),
+            title: "List".into(),
+            is_playlist: true,
+            entries,
+            unavailable,
+            complete: true,
+        }
+    }
+
+    fn video(id: &str) -> Value {
+        json!({"id": id, "title": format!("Video {id}"), "url": format!("https://www.youtube.com/watch?v={id}"), "ie_key": "Youtube"})
+    }
+
+    #[test]
+    fn entries_that_cannot_be_saved_are_known_from_the_listing() {
+        let cases = [
+            (
+                json!({"title": "[Deleted video]", "url": "https://youtube.com/watch?v=a"}),
+                Some("removed or made private on YouTube"),
+            ),
+            (
+                json!({"title": " [Private video] ", "url": "u"}),
+                Some("removed or made private on YouTube"),
+            ),
+            (
+                json!({"title": "[Unavailable video]", "url": "u"}),
+                Some("removed or made private on YouTube"),
+            ),
+            (
+                json!({"title": "Song", "availability": "private", "url": "u"}),
+                Some("private"),
+            ),
+            (
+                json!({"title": "Song", "availability": "subscriber_only", "url": "u"}),
+                Some("for channel members only"),
+            ),
+            (
+                json!({"title": "Song", "availability": "premium_only", "url": "u"}),
+                Some("for YouTube Premium only"),
+            ),
+            (
+                json!({"title": "Song", "availability": "needs_auth", "url": "u"}),
+                Some("needs signing in"),
+            ),
+            (
+                json!({"title": "Premiere", "live_status": "is_upcoming", "url": "u"}),
+                Some("not out yet (a premiere or a scheduled stream)"),
+            ),
+            (
+                json!({"title": "Live", "live_status": "is_live", "url": "u"}),
+                Some("live right now; save it once the stream has ended"),
+            ),
+            (
+                json!({"title": "Song", "availability": "public", "url": "u"}),
+                None,
+            ),
+            (
+                json!({"title": "Song", "availability": "unlisted", "url": "u"}),
+                None,
+            ),
+            (
+                json!({"title": "Old stream", "live_status": "was_live", "url": "u"}),
+                None,
+            ),
+            (
+                json!({"title": null, "availability": null, "live_status": null, "url": "u"}),
+                None,
+            ),
+            (json!({"title": "[Deleted video] remix", "url": "u"}), None),
+        ];
+        for (entry, reason) in cases {
+            assert_eq!(unavailable_reason(&entry), reason, "{entry}");
+        }
+    }
+
+    #[test]
+    fn unavailable_entries_are_split_off_with_their_place() {
+        let listing = listing_of(vec![
+            video("a"),
+            json!({"title": "[Deleted video]", "url": "u1", "id": "x"}),
+            video("b"),
+            json!({"title": "No link"}),
+            json!({"title": "[Private video]", "url": "u2", "id": "y"}),
+            video("c"),
+        ]);
+        let kept: Vec<(usize, &str)> = listing
+            .entries
+            .iter()
+            .map(|e| (e.listed_at, e.source_id.as_str()))
+            .collect();
+        assert_eq!(kept, [(1, "Youtube:a"), (3, "Youtube:b"), (6, "Youtube:c")]);
+        let gone: Vec<(usize, &str)> = listing
+            .unavailable
+            .iter()
+            .map(|g| (g.position, g.reason.as_str()))
+            .collect();
+        assert_eq!(
+            gone,
+            [
+                (2, "removed or made private on YouTube"),
+                (4, "has no link to save"),
+                (5, "removed or made private on YouTube")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_limit_counts_only_entries_that_can_be_saved() {
+        let mut listing = listing_of(vec![
+            json!({"title": "[Deleted video]", "url": "u"}),
+            video("a"),
+            json!({"title": "[Private video]", "url": "u"}),
+            video("b"),
+            video("c"),
+            json!({"title": "[Deleted video]", "url": "u"}),
+        ]);
+        keep_first(&mut listing, 2);
+        let ids: Vec<&str> = listing
+            .entries
+            .iter()
+            .map(|e| e.source_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["Youtube:a", "Youtube:b"],
+            "two saveable ones, though four were read"
+        );
+        let gone: Vec<usize> = listing.unavailable.iter().map(|g| g.position).collect();
+        assert_eq!(
+            gone,
+            [1, 3],
+            "only the unavailable ones before the cut are mentioned"
+        );
+        // A limit past the end keeps everything.
+        let mut all = listing_of(vec![video("a"), video("b")]);
+        keep_first(&mut all, 100);
+        assert_eq!(all.entries.len(), 2);
+    }
+
+    #[test]
+    fn generated_playlists_are_recognised() {
+        for id in [
+            "RDdQw4w9WgXcQ",
+            "RDMMdQw4w9WgXcQ",
+            "RDAMVMdQw4w9WgXcQ",
+            "RDEMx",
+        ] {
+            assert!(is_generated(id), "{id}");
+        }
+        for id in [
+            "RDCLAK5uy_kmPRjHDECIcuVwnKsx2Ng7fyNgFKWNJFs",
+            "PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf",
+            "OLAK5uy_x",
+            "UUx",
+            "",
+            "rdx",
+        ] {
+            assert!(!is_generated(id), "{id}");
+        }
     }
 }

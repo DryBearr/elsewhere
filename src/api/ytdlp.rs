@@ -141,7 +141,7 @@ pub enum YtdlpEvent {
 
 /// Stops a running `ytdlp_info` or `ytdlp_download` from any thread.
 #[derive(uniffi::Object, Default)]
-pub struct CancelToken(ytdlp::Cancel);
+pub struct CancelToken(pub(super) ytdlp::Cancel);
 
 #[uniffi::export]
 impl CancelToken {
