@@ -16,7 +16,7 @@ struct LibraryView: View {
         }
         .navigationTitle("Library")
         .task {
-            names = await Task.detached { (try? categories()) ?? [] }.value
+            names = await Task.detached { ((try? categories()) ?? []).map(\.name) }.value
             status = await Task.detached { () -> String in
                 if let error = Core.startError { return "The core did not start: \(error)" }
                 return "yt-dlp " + (coreStatus().ytdlpStarted ? "running" : "starts with the first download")

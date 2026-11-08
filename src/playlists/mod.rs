@@ -19,7 +19,7 @@ mod lyrics;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -196,6 +196,9 @@ where
     };
     let root = media.join(category);
     let folder = root.join(folder_name(&listing.title, &listing.id));
+    // A second save of the same playlist (Save tapped twice) waits for the first, then
+    // only adds what is new: two at once would write the same files.
+    let _folder = FolderLock::take(&folder, cancel, &*on_progress)?;
     fs::create_dir_all(&folder).map_err(files_problem)?;
     let cover = if listing.is_playlist {
         save_cover(url, &folder, cancel)
@@ -302,6 +305,57 @@ where
         items,
         failed,
     })
+}
+
+/// The playlist folders being saved into right now.
+static BUSY_FOLDERS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+static FOLDER_FREED: Condvar = Condvar::new();
+
+/// Holds a playlist folder for one save; the next save of it waits.
+struct FolderLock(PathBuf);
+
+impl FolderLock {
+    fn take(
+        folder: &Path,
+        cancel: &Cancel,
+        progress: &dyn Fn(Progress),
+    ) -> Result<FolderLock, Problem> {
+        let mut busy = BUSY_FOLDERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut said = false;
+        while busy.iter().any(|taken| taken == folder) {
+            if cancel.is_cancelled() {
+                return Err(Problem::cancelled());
+            }
+            if !said {
+                progress(Progress::Log {
+                    position: 0,
+                    level: Level::Info,
+                    message: "Waiting for another save of this playlist to finish".to_owned(),
+                });
+                said = true;
+            }
+            // Waiting is a sign of life for the watchdog, not a stall.
+            progress(Progress::Working);
+            busy = FOLDER_FREED
+                .wait_timeout(busy, std::time::Duration::from_millis(200))
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+        busy.push(folder.to_owned());
+        Ok(FolderLock(folder.to_owned()))
+    }
+}
+
+impl Drop for FolderLock {
+    fn drop(&mut self) {
+        let mut busy = BUSY_FOLDERS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        busy.retain(|taken| *taken != self.0);
+        FOLDER_FREED.notify_all();
+    }
 }
 
 /// One yt-dlp event while an item downloads, as progress.

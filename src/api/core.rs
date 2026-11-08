@@ -2,7 +2,7 @@
 //! start later, on first use (see ytdlp.rs).
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use super::{ApiError, bad_args, not_ready};
@@ -42,8 +42,8 @@ pub trait PythonBundle: Send + Sync {
 /// What the core keeps after `start`.
 pub(super) struct Core {
     pub folders: Folders,
-    pub db: PathBuf,
     pub jobs: &'static Jobs,
+    pub library: crate::library::Library,
     /// Read when Python first starts (only builds with yt-dlp have Python).
     #[cfg_attr(not(feature = "ytdlp"), allow(dead_code))]
     pub bundle: Mutex<Option<Box<dyn PythonBundle>>>,
@@ -100,18 +100,19 @@ pub fn start(
     super::ytdlp::prepare_env(&folders, python_bundle.is_some());
     // Players open saved media only.
     #[cfg(feature = "player")]
-    crate::player::allow_folders(&[PathBuf::from(&folders.media)]);
+    crate::player::allow_folders(&[std::path::PathBuf::from(&folders.media)]);
 
     let db = Path::new(&folders.data).join("elsewhere.db");
     let jobs = jobs::open_global(&db).map_err(not_ready)?;
+    let library = crate::library::Library::open(&db, Path::new(&folders.media))?;
     super::demo::register(jobs);
     #[cfg(feature = "playlists")]
     super::playlists::register(jobs, &db, Path::new(&folders.media));
 
     let core = Core {
         folders,
-        db,
         jobs,
+        library,
         bundle: Mutex::new(python_bundle),
     };
     let _ = CORE.set(core);

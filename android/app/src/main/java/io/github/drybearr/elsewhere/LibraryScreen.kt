@@ -19,7 +19,7 @@ import uniffi.elsewhere.coreStatus
 @Composable
 fun LibraryScreen() {
     val names by produceState(emptyList<String>()) {
-        value = withContext(Dispatchers.IO) { runCatching { categories() }.getOrDefault(emptyList()) }
+        value = withContext(Dispatchers.IO) { runCatching { categories().map { it.name } }.getOrDefault(emptyList()) }
     }
     val status by produceState("") {
         value = withContext(Dispatchers.IO) {

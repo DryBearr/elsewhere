@@ -519,3 +519,49 @@ fn cancelling_a_playlist_job_stops_the_download() {
         "cancelled before the slow first item finished: {last:?}"
     );
 }
+
+#[test]
+fn two_saves_of_the_same_playlist_at_once_both_succeed() {
+    setup();
+    let dir = folder("twice");
+    let db = dir.join("library.db");
+    // The slow file takes about a second, so the two saves overlap: the second must wait
+    // for the first instead of writing the same files at the same time.
+    let saves: Vec<_> = (0..2)
+        .map(|_| {
+            let (dir, db) = (dir.clone(), db.clone());
+            let (events, on_progress) = progress();
+            let save = std::thread::spawn(move || {
+                playlists::save(
+                    &db,
+                    &dir,
+                    &url("/slow-playlist.html"),
+                    &options(),
+                    on_progress,
+                    &Cancel::new(),
+                )
+            });
+            (save, events)
+        })
+        .collect();
+    let mut waited = 0;
+    for (save, events) in saves {
+        let saved = save.join().unwrap().unwrap();
+        assert_eq!(
+            (saved.items.len(), saved.failed.len()),
+            (2, 0),
+            "{:?}",
+            saved.failed
+        );
+        waited += events.lock().unwrap().iter().filter(|event| {
+            matches!(event, Progress::Log { message, .. } if message.starts_with("Waiting for another save"))
+        })
+        .count();
+    }
+    assert_eq!(waited, 1, "exactly one save waited for the other");
+    let collections: i64 = Connection::open(&db)
+        .unwrap()
+        .query_row("SELECT count(*) FROM collection", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(collections, 1, "one playlist, not two");
+}

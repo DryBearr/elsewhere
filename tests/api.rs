@@ -464,3 +464,78 @@ fn errors_carry_a_problem_for_the_screen() {
     assert_eq!(problem.kind, ProblemKind::Input);
     assert!(!problem.text.is_empty() && !problem.retry, "{problem:?}");
 }
+
+#[test]
+fn a_saved_playlist_reads_back_from_the_library() {
+    core();
+    // The test server's files are videos: an audio-only save finds no audio stream there.
+    let options = PlaylistOptions {
+        format: MediaFormat::Video { max_height: None },
+        lyrics: false,
+        limit: None,
+    };
+    let id = api::save_playlist(url("/library-playlist.html"), options).unwrap();
+    let job = wait_for(id, finished);
+    assert_eq!((job.status, job.done), (JobStatus::Done, 2), "{job:?}");
+
+    let tabs = api::categories().unwrap();
+    let videos = tabs.iter().find(|tab| tab.name == "Videos").unwrap();
+    assert_eq!(videos.media, api::MediaKind::Video);
+    let lists = api::collections(videos.id).unwrap();
+    let list = lists
+        .iter()
+        .find(|list| list.name == "Library Playlist")
+        .expect("the saved playlist");
+    assert_eq!((list.entries, list.smart), (2, false));
+    assert!(list.source.is_some());
+    assert_eq!(api::collection(list.id).unwrap(), *list);
+
+    let first = api::collection_items(list.id, None, 1).unwrap();
+    assert_eq!(first.entries.len(), 1);
+    let second = api::collection_items(list.id, first.next.clone(), 1).unwrap();
+    assert_eq!((second.entries.len(), second.next.clone()), (1, None));
+    let titles: Vec<String> = first
+        .entries
+        .iter()
+        .chain(&second.entries)
+        .map(|entry| entry.item.title.clone())
+        .collect();
+    assert_eq!(titles, ["Lib - One", "Lib - Two"]);
+    for entry in first.entries.iter().chain(&second.entries) {
+        let item = &entry.item;
+        assert_eq!(
+            (item.kind, item.media, item.missing),
+            (api::ItemKind::Entry, api::MediaKind::Video, false)
+        );
+        let file = std::path::PathBuf::from(api::item_file(item.id).unwrap());
+        assert!(file.is_file(), "{}", file.display());
+        let media = std::fs::canonicalize(&folders().media).unwrap();
+        assert!(
+            file.starts_with(&media),
+            "{} is in {}",
+            file.display(),
+            media.display()
+        );
+        let detail = api::item(item.id).unwrap();
+        assert_eq!(detail.summary.id, item.id);
+        assert!(detail.source_url.is_some(), "{detail:?}");
+    }
+
+    assert_eq!(
+        kind_of(&api::collection_items(
+            list.id,
+            Some("not a cursor".to_owned()),
+            1
+        )),
+        Some(ProblemKind::Input)
+    );
+    assert_eq!(
+        kind_of(&api::item(i64::MAX)),
+        Some(ProblemKind::Unavailable)
+    );
+    assert_eq!(kind_of(&api::item_file(-1)), Some(ProblemKind::Unavailable));
+    assert_eq!(
+        kind_of(&api::collections(-5)),
+        Some(ProblemKind::Unavailable)
+    );
+}

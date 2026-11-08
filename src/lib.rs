@@ -16,6 +16,7 @@ pub mod api;
 mod db;
 pub mod health;
 pub mod jobs;
+pub mod library;
 pub mod logs;
 #[cfg(feature = "ytdlp")]
 mod phone;
