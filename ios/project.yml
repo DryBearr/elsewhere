@@ -1,6 +1,6 @@
-# XcodeGen spec for the iOS app, following Slint's iOS guide.
-# Needs a Mac. First prepare Python and yt-dlp, then generate the Xcode project:
-#   python3 scripts/mobile_python.py ios     (from the repository root)
+# XcodeGen spec for the iOS app. Needs a Mac. First build its parts, then the project:
+#   python3 scripts/mobile_python.py ios     (Python with yt-dlp)
+#   scripts/ios_rust.sh                      (the Rust core and its Swift bindings)
 #   cd ios && xcodegen
 # The release workflow sets MARKETING_VERSION and CURRENT_PROJECT_VERSION.
 name: Elsewhere
@@ -14,45 +14,32 @@ targets:
   Elsewhere:
     type: application
     platform: iOS
-    deploymentTarget: "15.0"
+    deploymentTarget: "16.0"
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: io.github.drybearr.elsewhere
       TARGETED_DEVICE_FAMILY: "1,2"
+      SWIFT_VERSION: "5.0"
     info:
       path: Info.plist
       properties:
         CFBundleDisplayName: Elsewhere
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
-        CADisableMinimumFrameDurationOnPhone: true
-        UILaunchScreen:
-          - ImageRespectSafeAreaInsets: false
+        UILaunchScreen: {}
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
-          UISceneConfigurations:
-            UIWindowSceneSessionRoleApplication:
-              - UISceneConfigurationName: Slint
-                UISceneDelegateClassName: SlintWindowSceneDelegate
-    sources: []
-    scheme: {}
-    # Python, with yt-dlp in its site-packages, made by scripts/mobile_python.py.
+    sources:
+      - Elsewhere
+      # Swift bindings for the Rust core, written by scripts/ios_rust.sh.
+      - path: ../target/ios/bindings/elsewhere.swift
     dependencies:
+      # The Rust core (static library), from scripts/ios_rust.sh.
+      - framework: ../target/ios/ElsewhereCore.xcframework
+        embed: false
+      # Python, with yt-dlp in its site-packages, from scripts/mobile_python.py.
       - framework: ../target/ios/Python.xcframework
         embed: true
     postCompileScripts:
-      - name: Build Rust with cargo
-        script: |
-          # PyO3 links against the Python slice that matches this build.
-          if [ "$EFFECTIVE_PLATFORM_NAME" = "-iphonesimulator" ]; then
-            slice=ios-arm64_x86_64-simulator
-          else
-            slice=ios-arm64
-          fi
-          export PYO3_PYTHON=python3
-          export PYO3_CROSS_LIB_DIR="$PROJECT_DIR/../target/ios/Python.xcframework/$slice/lib-$ARCHS"
-          ./build_for_ios_with_cargo.bash elsewhere --features ytdlp
-        outputFileLists:
-          $TARGET_BUILD_DIR/$EXECUTABLE_PATH
       # Python's official helper: copies the standard library and yt-dlp into
       # Elsewhere.app/python, and turns each C module into a framework, as iOS requires.
       - name: Install Python
@@ -65,3 +52,4 @@ targets:
             EXPANDED_CODE_SIGN_IDENTITY="-"
           fi
           install_python ../target/ios/Python.xcframework
+    scheme: {}

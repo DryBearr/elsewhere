@@ -3,63 +3,36 @@ name = "elsewhere"
 version = "0.2.0"
 edition = "2024"
 
+# The shared core of the Android and iOS apps (android/, ios/). They call it through
+# src/api.rs; the build scripts compile it as a cdylib (Android) or staticlib (iOS).
 [lib]
-crate-type = ["cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [features]
 # yt-dlp utility through embedded Python (src/ytdlp), with a built-in JavaScript engine for
-# YouTube (third_party/quickjs). Off by default: without it the app builds with no Python.
+# YouTube (third_party/quickjs). Off by default: without it the core builds with no Python.
 ytdlp = ["dep:pyo3", "dep:cc"]
+# The uniffi-bindgen tool, which writes the Kotlin and Swift bindings. Build machines only.
+bindgen = ["uniffi/cli", "uniffi/cargo-metadata"]
 
 [dependencies]
 pyo3 = { version = "0.30", optional = true }
 rusqlite = { version = "0.41", features = ["bundled"] }
-slint = "1.18"
+uniffi = { version = "0.32", default-features = false }
 
 [build-dependencies]
 # Compiles QuickJS for the ytdlp feature. Already in the build through rusqlite's bundled SQLite.
 cc = { version = "1", optional = true }
-slint-build = "1.18"
 
-[target.'cfg(target_os = "android")'.dependencies]
-slint = { version = "1.18", features = ["backend-android-activity-06"] }
-
-# iOS draws with Skia on Metal (Slint's supported iOS renderer).
-[target.'cfg(target_os = "ios")'.dependencies]
-slint = { version = "1.18", features = ["renderer-skia"] }
-
-# Linux desktop only: load fontconfig at runtime, so builds need no fontconfig dev headers.
-# Keep the version in step with the fontique version Slint uses.
-[target.'cfg(target_os = "linux")'.dependencies]
-fontique = { version = "0.11", features = ["fontconfig-dlopen"] }
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
 
 [[test]]
 name = "ytdlp"
 required-features = ["ytdlp"]
 
-# Android package. versionName comes from `version` above, and the release workflow
-# checks that the git tag matches it. Build it with Python, yt-dlp and ffmpeg inside:
-#   python3 scripts/mobile_python.py android
-#   scripts/android_ffmpeg.sh
-#   PYO3_CROSS_LIB_DIR=$PWD/target/android/prefix/lib cargo apk build --release --lib --features ytdlp
-[package.metadata.android]
-package = "io.github.drybearr.elsewhere"
-apk_name = "Elsewhere"
-build_targets = ["aarch64-linux-android"]
-# Made by scripts/mobile_python.py: the Python standard library and yt-dlp, and libpython.
-assets = "target/android/assets"
-runtime_libs = "target/android/libs"
-
-# yt-dlp needs the network.
-[[package.metadata.android.uses_permission]]
-name = "android.permission.INTERNET"
-
-[package.metadata.android.sdk]
-min_sdk_version = 26
-target_sdk_version = 35
-
-[package.metadata.android.application]
-label = "Elsewhere"
-# Unpack native libraries to disk: ffmpeg and ffprobe ship as libffmpeg.so and
-# libffprobe.so and are run from there (src/platform/android.rs).
-extract_native_libs = true
+# Smaller phone builds: no debug info in the Rust core.
+[profile.release]
+strip = "debuginfo"

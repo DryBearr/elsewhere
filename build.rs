@@ -1,6 +1,4 @@
 fn main() {
-    slint_build::compile("ui/app.slint").unwrap();
-
     // The ytdlp feature carries a JavaScript engine for YouTube's challenges (src/ytdlp/js.rs).
     #[cfg(feature = "ytdlp")]
     {

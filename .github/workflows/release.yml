@@ -43,6 +43,15 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Load the signing key
@@ -60,7 +69,6 @@ jobs:
         run: |
           rustup target add aarch64-linux-android
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0" > /dev/null
-          cargo install cargo-apk --locked
 
       - name: Bundle Python and yt-dlp
         run: python3 scripts/mobile_python.py android
@@ -73,17 +81,16 @@ jobs:
       - name: Build ffmpeg for Android
         run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_ffmpeg.sh aarch64
 
+      - name: Build the Rust core for Android
+        run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_rust.sh aarch64 release
+
       - name: Build APK
         env:
-          PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ELSEWHERE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
-          export ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME"
-          export CARGO_APK_RELEASE_KEYSTORE="$RUNNER_TEMP/release.p12"
-          export CARGO_APK_RELEASE_KEYSTORE_PASSWORD="$PASSWORD"
-          export PYO3_PYTHON=python3
-          export PYO3_CROSS_LIB_DIR="$PWD/target/android/prefix/lib"
-          cargo apk build --release --lib --features ytdlp
-          cp target/release/apk/Elsewhere.apk Elsewhere.apk
+          export ELSEWHERE_KEYSTORE="$RUNNER_TEMP/release.p12"
+          gradle -p android assembleRelease
+          cp android/app/build/outputs/apk/release/app-release.apk Elsewhere.apk
 
       - uses: actions/upload-artifact@v4
         with:
@@ -101,6 +108,8 @@ jobs:
         with:
           python-version: "3.15"
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Install iOS build tools
         run: |
           rustup target add aarch64-apple-ios
@@ -108,6 +117,9 @@ jobs:
 
       - name: Bundle Python and yt-dlp
         run: python3 scripts/mobile_python.py ios
+
+      - name: Build the Rust core for iOS
+        run: scripts/ios_rust.sh device release
 
       - name: Build unsigned IPA
         env:

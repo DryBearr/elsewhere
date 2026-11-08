@@ -14,9 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Linux libraries Slint needs
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig-dev libxkbcommon-dev
-
       - uses: actions/setup-python@v6
         with:
           python-version: "3.15"
@@ -37,6 +34,12 @@ jobs:
 
       - name: Test
         run: cargo test --features ytdlp
+
+      - name: Kotlin and Swift bindings can be generated
+        run: |
+          cargo rustc --lib --features ytdlp --crate-type cdylib
+          cargo run --features bindgen --bin uniffi-bindgen -- generate --library target/debug/libelsewhere.so \
+            --language kotlin --language swift --no-format --out-dir target/bindings
 
       - name: YouTube's JavaScript challenge, solved by the built-in engine
         run: cargo test --features ytdlp --test ytdlp -- --ignored youtube_challenge --nocapture
