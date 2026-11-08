@@ -9,6 +9,7 @@ src/                Rust core, shared by both apps
   playlists/        save YouTube / YouTube Music playlists into the library (feature `playlists`)
   jobs/             runs long work in the background and reports exact status to the app
   player/           the media engine: plays local files through libmpv (feature `player`)
+  library/          the media library: tabs, playlists, items and their files (read side)
   problem.rs        what a failure means for people: kind, text, detail, retry
   health.rs         supervised parts that restart themselves; says when the app must restart
   logs.rs           the core's log, on the phone only
@@ -88,6 +89,16 @@ Nothing leaves the phone: no crash reports, no telemetry. The core heals what it
 - **Restart:** the database is the truth and the app's start is the recovery path, so restarting (Android does it by itself) is always safe.
 
 Tests break things on purpose: delivery crashes, failing saves, a stuck and a stalled job (`src/jobs/tests.rs`), a server that fails twice or always (`tests/playlists.rs`), log rotation and crash notes (`tests/recovery.rs`). The Mobile workflow runs them on the emulator and simulator too.
+
+## Library module
+
+`library` reads the media library (step 1 of several: browsing, marks, editing, change notices, search and folder scans come next). The apps get `categories()`, `collections(tab)`, `collection(id)`, `collection_items(id, after, limit)`, `item(id)` and `item_file(id)`.
+
+- **Ids, never paths:** the apps hold item ids; `item_file` is the only way to a file, and it checks that the file exists, is a regular file and lies inside its library folder and the media folder (links resolved).
+- **Bad data never fails a list:** a deleted file or cover, missing fields or odd values in `extra` leave the row in place, marked `missing` or without a cover.
+- **Pages:** playlists come 100 entries at a time (at most 500), ordered by position and entry id, with an opaque cursor: rows added or removed meanwhile never repeat or vanish among the rest. Each row carries its progress (position, percent, done, plays).
+- **One connection, healed:** reused for every call, reopened once when it breaks.
+- **Moved folders:** iOS gives an updated app a new container path (and Android can move an app to other storage). A stored path that is gone but runs through a folder named like the media folder is found again inside today's media folder.
 
 ## Player module
 

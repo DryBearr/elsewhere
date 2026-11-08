@@ -81,6 +81,10 @@ fn page(path: &str) -> Option<(&'static str, String)> {
             playlist("Broken Playlist", &["/Band%20-%20Hit.mp4", "/missing.mp4"])
         }
         "/slow-playlist.html" => playlist("Slow Playlist", &["/slow.mp4", "/Band%20-%20Hit.mp4"]),
+        "/library-playlist.html" => playlist(
+            "Library Playlist",
+            &["/Lib%20-%20One.mp4", "/Lib%20-%20Two.mp4"],
+        ),
         "/down-playlist.html" => playlist("Down Playlist", &["/down.mp4"]),
         path if path.starts_with("/flaky-playlist-") => {
             let key = path
