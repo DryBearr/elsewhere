@@ -9,7 +9,8 @@ src/                Rust core, shared by both apps
   playlists/        save YouTube / YouTube Music playlists into the library (feature `playlists`)
   jobs/             runs long work in the background and reports exact status to the app
   player/           the media engine: plays local files through libmpv (feature `player`)
-  library/          the media library: tabs, playlists, items and their files (read side)
+  library/          the media library: tabs, playlists, items, files and what the person marks
+  queue/            the playlist player: a queue of library items through the media engine
   problem.rs        what a failure means for people: kind, text, detail, retry
   health.rs         supervised parts that restart themselves; says when the app must restart
   logs.rs           the core's log, on the phone only
@@ -100,6 +101,15 @@ Tests break things on purpose: delivery crashes, failing saves, a stuck and a st
 - **One connection, healed:** reused for every call, reopened once when it breaks.
 - **What the person marks (step 3):** `start_play(item)` says where to start and begins a play; `save_progress(item, position, duration)` keeps the resume point; `set_watched`, `set_favorite`, `set_rating`. The rules: songs (audio under 20 minutes) and clips (video under 5 minutes) always start over; longer things resume, but only from 30 s on; done at 95 %, or in the last 2 minutes of items 10 minutes and longer, and a done item starts over; a play counts once, however often the end is reached by seeking; the player's length corrects the stored one; a save for an item that is gone does nothing.
 - **Moved folders:** iOS gives an updated app a new container path (and Android can move an app to other storage). A stored path that is gone but runs through a folder named like the media folder is found again inside today's media folder.
+
+## Queue module
+
+`queue` is the playlist player (feature `player`), built on the media engine and the library. `QueuePlayer::new(library)` takes `Command`s (play items from an index, resume, pause, next, previous, seek, jump, repeat off/all/one, shuffle, speed, add, remove, move, stop) and sends the whole `QueueState` with a revision on every change.
+
+- **One thread owns it:** app commands and engine states go through one channel and are handled in order; the thread runs supervised. A command's result is in `state()` as soon as `command` returns.
+- **The library decides where to start** (songs from the top, videos from their resume point) and keeps the progress: saved on pause, every 10 s, when an entry ends or is left, and on stop. Plays count once.
+- **Order rules** (`src/queue/order.rs`, tested without the engine): shuffle plays every entry once and keeps the current one; repeat one replays it when it ends but a skip moves on; repeat all starts over, reshuffled, never with the entry that just played; previous restarts an entry after 3 s.
+- **Robust:** what cannot be played is skipped with its reason, in a loop (thousands of missing files stop cleanly); when nothing can be played the queue stops with a Problem; late engine states of the previous file are ignored.
 
 ## Player module
 
