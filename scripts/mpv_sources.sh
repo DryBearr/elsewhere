@@ -73,11 +73,22 @@ fetch_all() {
     { echo "libplacebo $LIBPLACEBO is not commit $LIBPLACEBO_COMMIT" >&2; exit 1; }
 }
 
-# The meson build tools, in their own Python environment.
+# The meson build tools, in their own Python environment. A runner's Python can come
+# without a working ensurepip, so the next Python is tried (macOS always has Apple's).
 tools() {
   if [ ! -x "$work/venv/bin/meson" ]; then
-    python3 -m venv "$work/venv"
-    "$work/venv/bin/pip" install --quiet --disable-pip-version-check $TOOLS
+    local python made=""
+    for python in python3 /usr/bin/python3 python3.13 python3.12; do
+      command -v "$python" > /dev/null || continue
+      rm -rf "$work/venv"
+      if "$python" -m venv "$work/venv" > /dev/null 2>&1 &&
+        "$work/venv/bin/pip" install --quiet --disable-pip-version-check $TOOLS; then
+        made=yes
+        break
+      fi
+      echo "$python could not make the build tools' environment; trying the next one"
+    done
+    [ -n "$made" ] || { echo "no Python could make the build tools' environment" >&2; exit 1; }
   fi
   export PATH=$work/venv/bin:$PATH
 }
