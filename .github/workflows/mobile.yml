@@ -51,6 +51,12 @@ jobs:
           path: target/mpv/x86_64
           key: mpv-x86_64-${{ hashFiles('scripts/android_mpv.sh', 'scripts/mpv_sources.sh') }}
 
+      # The downloaded sources, so a new build does not depend on every server answering.
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv/sources
+          key: mpv-sources-${{ hashFiles('scripts/mpv_sources.sh') }}
+
       - name: Build libmpv for the emulator
         run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_mpv.sh x86_64
 
@@ -149,6 +155,11 @@ jobs:
         with:
           path: target/mpv-ios
           key: mpv-ios-simulator-${{ hashFiles('scripts/ios_mpv.sh', 'scripts/mpv_sources.sh') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv-ios/sources
+          key: mpv-ios-sources-${{ hashFiles('scripts/mpv_sources.sh') }}
 
       - name: Build libmpv for the simulator
         run: scripts/ios_mpv.sh simulator

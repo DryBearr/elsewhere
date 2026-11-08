@@ -43,7 +43,8 @@ fetch() {
   local url=$1 sum=$2 name=$3 file=$sources/${1##*/}
   if [ ! -f "$file" ] || ! sum_ok "$sum" "$file"; then
     echo "Downloading $name"
-    curl -fsSL --retry 3 "$url" -o "$file"
+    # Servers reset connections now and then: try again on any error.
+    curl -fsSL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 30 "$url" -o "$file"
     sum_ok "$sum" "$file" || { echo "$file: wrong checksum" >&2; exit 1; }
   fi
   rm -rf "${build:?}/$name"
@@ -60,9 +61,14 @@ fetch_all() {
   fetch "https://github.com/libass/libass/releases/download/$LIBASS/libass-$LIBASS.tar.xz" $LIBASS_SHA libass
   fetch "https://github.com/mpv-player/mpv/archive/refs/tags/v$MPV.tar.gz" $MPV_SHA mpv
   echo "Downloading libplacebo"
-  rm -rf "$build/libplacebo"
-  git clone --quiet --depth 1 --branch $LIBPLACEBO --recurse-submodules --shallow-submodules \
-    https://code.videolan.org/videolan/libplacebo.git "$build/libplacebo" 2> /dev/null
+  local try
+  for try in 1 2 3 4; do
+    rm -rf "$build/libplacebo"
+    git clone --quiet --depth 1 --branch $LIBPLACEBO --recurse-submodules --shallow-submodules \
+      https://code.videolan.org/videolan/libplacebo.git "$build/libplacebo" 2> /dev/null && break
+    [ $try = 4 ] && { echo "could not download libplacebo" >&2; exit 1; }
+    sleep 10
+  done
   [ "$(git -C "$build/libplacebo" rev-parse HEAD)" = $LIBPLACEBO_COMMIT ] ||
     { echo "libplacebo $LIBPLACEBO is not commit $LIBPLACEBO_COMMIT" >&2; exit 1; }
 }
