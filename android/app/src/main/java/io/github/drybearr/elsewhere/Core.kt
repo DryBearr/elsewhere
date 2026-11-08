@@ -55,7 +55,7 @@ private class AssetBundle(private val context: Context) : PythonBundle {
     private var input: InputStream? = null
 
     @Synchronized
-    override fun open(): Boolean = try {
+    override fun rewind(): Boolean = try {
         input?.close()
         input = context.assets.open("python.tar")
         true

@@ -28,12 +28,13 @@ pub struct Folders {
     pub programs: Option<String>,
 }
 
-/// Android: hands the core the APK's python.tar when it first needs Python. `open`
+/// Android: hands the core the APK's python.tar when it first needs Python. `rewind`
 /// (re)starts reading from the beginning and says whether that worked; `read` returns the
-/// next bytes, an empty list at the end.
+/// next bytes, an empty list at the end. (Not `open`: UniFFI escapes that Swift keyword
+/// into the C header, which then does not compile.)
 #[uniffi::export(callback_interface)]
 pub trait PythonBundle: Send + Sync {
-    fn open(&self) -> bool;
+    fn rewind(&self) -> bool;
     fn read(&self, max: u32) -> Vec<u8>;
 }
 

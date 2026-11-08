@@ -53,7 +53,7 @@ pub(crate) fn ensure() -> Result<(), ApiError> {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(bundle) = bundle.as_deref() {
-        if !bundle.open() {
+        if !bundle.rewind() {
             return Err(ApiError::NotReady {
                 message: "cannot open the Python bundle".to_owned(),
             });
