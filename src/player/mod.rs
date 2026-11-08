@@ -147,10 +147,22 @@ fn player_problem(text: &str, detail: String) -> Problem {
 /// from being made (they keep it local and quiet); the second list may be missing from
 /// older mpv versions.
 fn configure(mpv: &Handle) -> Result<(), Problem> {
+    // Scripts and yt-dlp: off. A build without scripting (the phone builds) does not even
+    // have these options, which is just as safe.
+    for (name, value) in [("load-scripts", "no"), ("ytdl", "no")] {
+        match mpv.set_option(name, value) {
+            Ok(()) => {}
+            Err(code) if code == mpv::OPTION_NOT_FOUND => {}
+            Err(code) => {
+                return Err(player_problem(
+                    "The player could not start.",
+                    format!("option {name}={value}: {}", mpv.error_text(code)),
+                ));
+            }
+        }
+    }
     let mut required = vec![
         ("config", "no"),
-        ("load-scripts", "no"),
-        ("ytdl", "no"),
         ("access-references", "no"),
         ("load-unsafe-playlists", "no"),
         ("idle", "yes"),
