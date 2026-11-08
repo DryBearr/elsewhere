@@ -1,7 +1,7 @@
 //! Background jobs (see src/jobs): their states for the screen, their logs, and the
 //! buttons (cancel, resume, discard, forget).
 
-use super::{ApiError, LogLevel, bad_args, core};
+use super::{ApiError, LogLevel, Problem, bad_args, core};
 use crate::jobs::{self, Status};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -30,7 +30,8 @@ pub struct JobState {
     pub failed: i32,
     pub total: Option<i32>,
     pub current: Option<JobItem>,
-    pub last_error: Option<String>,
+    /// The latest error: of the job when it failed, else of the last failed item.
+    pub last_error: Option<Problem>,
     /// How many log lines exist; fetch new ones with job_logs.
     pub log_lines: i64,
 }
@@ -175,7 +176,7 @@ impl From<jobs::JobState> for JobState {
                 speed: item.speed,
                 eta: item.eta.map(signed),
             }),
-            last_error: state.last_error,
+            last_error: state.last_error.map(Problem::from),
             log_lines: signed(state.log_lines as u64),
         }
     }

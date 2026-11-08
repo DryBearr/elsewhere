@@ -7,10 +7,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use common::{api_folders, server, url};
+use common::{api_folders, kind_of, server, url};
 use elsewhere::api::{
     self, ApiError, CancelToken, DemoOptions, EventListener, JobListener, JobState, JobStatus,
-    LogLevel, MediaFormat, PlaylistOptions, YtdlpEvent,
+    LogLevel, MediaFormat, PlaylistOptions, ProblemKind, YtdlpEvent,
 };
 
 /// Every state the one listener got, by job, in arrival order.
@@ -103,7 +103,13 @@ fn a_demo_job_reaches_the_listener_exactly() {
         (JobStatus::Done, 4, 1, Some(5), "demo")
     );
     assert_eq!(last.current, None);
-    assert!(last.last_error.as_deref().unwrap().contains("Demo item 3"));
+    assert!(
+        last.last_error
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("Demo item 3")
+    );
 
     // What the screen got: revisions only go up, one final state, and it is the last one
     // and equal to what the core has.
@@ -213,12 +219,12 @@ fn unknown_and_impossible_requests_are_refused_without_panicking() {
         assert!(!api::cancel_job(id).unwrap());
         assert!(!api::discard_job(id).unwrap());
         assert!(!api::forget_job(id).unwrap());
-        assert!(matches!(api::resume_job(id), Err(ApiError::BadArgs { .. })));
+        assert!(kind_of(&api::resume_job(id)) == Some(ProblemKind::Input));
     }
     let done = demo(1, 0, None, None);
     wait_for(done, finished);
     assert!(
-        matches!(api::resume_job(done), Err(ApiError::BadArgs { .. })),
+        kind_of(&api::resume_job(done)) == Some(ProblemKind::Input),
         "a Done job is not resumed"
     );
     assert!(
@@ -232,10 +238,7 @@ fn unknown_and_impossible_requests_are_refused_without_panicking() {
         fail_at: None,
         warn_at: None,
     };
-    assert!(matches!(
-        api::start_demo_job(bad_demo),
-        Err(ApiError::BadArgs { .. })
-    ));
+    assert!(kind_of(&api::start_demo_job(bad_demo)) == Some(ProblemKind::Input));
 }
 
 #[test]
@@ -256,10 +259,7 @@ fn bad_playlist_requests_are_refused_before_a_job_starts() {
         "https://a b/c",
     ] {
         assert!(
-            matches!(
-                api::save_playlist(link.to_owned(), ok),
-                Err(ApiError::BadArgs { .. })
-            ),
+            kind_of(&api::save_playlist(link.to_owned(), ok)) == Some(ProblemKind::Input),
             "{link:?}"
         );
     }
@@ -274,10 +274,10 @@ fn bad_playlist_requests_are_refused_before_a_job_starts() {
         ..ok
     };
     for options in [zero_height, zero_limit] {
-        assert!(matches!(
-            api::save_playlist(url("/playlist.html"), options),
-            Err(ApiError::BadArgs { .. })
-        ));
+        assert!(
+            kind_of(&api::save_playlist(url("/playlist.html"), options))
+                == Some(ProblemKind::Input)
+        );
     }
     // Refused requests leave no job behind (other tests may add their own meanwhile).
     let refused_titles = api::jobs()
@@ -328,7 +328,7 @@ fn a_failed_job_can_be_retried_and_fails_the_same_way() {
     let first = wait_for(id, finished);
     assert_eq!(first.status, JobStatus::Failed, "{first:?}");
     assert!(
-        first.last_error.as_deref().unwrap().contains("404"),
+        first.last_error.as_ref().unwrap().detail.contains("404"),
         "{first:?}"
     );
 
@@ -394,14 +394,17 @@ fn ytdlp_calls_start_ytdlp_when_needed() {
         Box::new(Lines(Mutex::default())),
         cancel,
     );
-    assert!(matches!(result, Err(ApiError::Cancelled)), "{result:?}");
+    assert!(
+        kind_of(&result) == Some(ProblemKind::Cancelled),
+        "{result:?}"
+    );
     let bad = api::ytdlp_info(
         url("/clip.mp4"),
         vec!["--no-such-flag".to_owned()],
         Box::new(Lines(Mutex::default())),
         Arc::new(CancelToken::new()),
     );
-    assert!(matches!(bad, Err(ApiError::BadArgs { .. })), "{bad:?}");
+    assert!(kind_of(&bad) == Some(ProblemKind::Input), "{bad:?}");
 }
 
 #[test]
@@ -437,4 +440,27 @@ fn many_jobs_from_many_threads() {
                 .all(|pair| pair[0].revision < pair[1].revision)
         );
     }
+}
+
+#[test]
+fn the_core_keeps_its_log_on_the_device() {
+    core();
+    let log =
+        std::fs::read_to_string(std::path::Path::new(&folders().data).join("logs/elsewhere.log"))
+            .unwrap();
+    assert!(log.contains("Starting Elsewhere"), "{log}");
+    assert!(
+        log.lines()
+            .all(|line| line.starts_with('{') && line.ends_with('}'))
+    );
+}
+
+#[test]
+fn errors_carry_a_problem_for_the_screen() {
+    core();
+    let Err(ApiError::Failed { problem }) = api::resume_job(999_999) else {
+        panic!("an unknown job cannot be resumed");
+    };
+    assert_eq!(problem.kind, ProblemKind::Input);
+    assert!(!problem.text.is_empty() && !problem.retry, "{problem:?}");
 }

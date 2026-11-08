@@ -1,6 +1,11 @@
 //! The library database.
 
-use super::{ApiError, core, failed};
+use super::{ApiError, core};
+use crate::problem;
+
+fn failed(err: rusqlite::Error) -> ApiError {
+    problem::from_sqlite(&err, "reading the library").into()
+}
 
 /// Category names (the library's tabs), in display order.
 #[uniffi::export]

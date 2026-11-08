@@ -57,7 +57,7 @@ pub fn run<F>(
 where
     F: Fn(Event) + Send + Sync + 'static,
 {
-    if cancel.is_cancelled() {
+    if cancel.should_stop() {
         return Err(Error::Cancelled);
     }
     let bridge = bridge()?;
@@ -82,7 +82,7 @@ where
                 py,
                 None,
                 None,
-                move |_: &Bound<'_, PyTuple>, _: Option<&Bound<'_, PyDict>>| cancel.is_cancelled(),
+                move |_: &Bound<'_, PyTuple>, _: Option<&Bound<'_, PyDict>>| cancel.should_stop(),
             )?;
             module
                 .getattr(function)?

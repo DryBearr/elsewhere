@@ -5,12 +5,14 @@
 
 use std::ffi::{CStr, CString, c_char, c_int};
 use std::thread;
+use std::time::Duration;
 
 unsafe extern "C" {
     fn elsewhere_js_run(
         code: *const c_char,
         len: usize,
         max_stack: usize,
+        max_seconds: f64,
         output: *mut *mut c_char,
     ) -> c_int;
     fn elsewhere_js_free(output: *mut c_char);
@@ -23,9 +25,19 @@ const STACK: usize = 64 << 20;
 /// JavaScript error instead of crashing.
 const MAX_JS_STACK: usize = STACK - (4 << 20);
 
+/// How long a script may run before it is stopped. Solving a YouTube challenge takes a few
+/// seconds (15 on the slow Android emulator); a script still running after this is stuck.
+pub const TIME_LIMIT: Duration = Duration::from_secs(120);
+
 /// Runs `code` as a plain script in a fresh engine. Returns what it printed with
 /// console.log (lines joined by `\n`), or the JavaScript error.
 pub fn run(code: &str) -> Result<String, String> {
+    run_with_limit(code, TIME_LIMIT)
+}
+
+/// `run`, stopping the script after `limit` with an error.
+pub fn run_with_limit(code: &str, limit: Duration) -> Result<String, String> {
+    let seconds = limit.as_secs_f64();
     let code = CString::new(code).map_err(|_| "the script contains a NUL byte".to_owned())?;
     thread::Builder::new()
         .name("javascript".to_owned())
@@ -39,6 +51,7 @@ pub fn run(code: &str) -> Result<String, String> {
                     code.as_ptr(),
                     code.as_bytes().len(),
                     MAX_JS_STACK,
+                    seconds,
                     &mut output,
                 )
             };
@@ -52,7 +65,13 @@ pub fn run(code: &str) -> Result<String, String> {
                 unsafe { elsewhere_js_free(output) };
                 text
             };
-            if failed == 0 { Ok(text) } else { Err(text) }
+            match failed {
+                0 => Ok(text),
+                _ if text.contains("interrupted") => Err(format!(
+                    "the script ran longer than {seconds:.0} s and was stopped"
+                )),
+                _ => Err(text),
+            }
         })
         .map_err(|err| format!("could not start the JavaScript thread: {err}"))?
         .join()
@@ -61,7 +80,8 @@ pub fn run(code: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::run;
+    use super::{run, run_with_limit};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn prints_come_back_as_lines() {
@@ -83,6 +103,14 @@ mod tests {
     fn deep_recursion_is_an_error_not_a_crash() {
         let err = run("function f(n) { return f(n + 1) + 1 } f(0)").unwrap_err();
         assert!(err.contains("stack") || err.contains("Range"), "{err}");
+    }
+
+    #[test]
+    fn an_endless_script_is_stopped() {
+        let started = Instant::now();
+        let err = run_with_limit("while (true) {}", Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("longer than"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

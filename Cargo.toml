@@ -49,6 +49,11 @@ required-features = ["playlists"]
 name = "api_lazy"
 required-features = ["playlists"]
 
-# Smaller phone builds: no debug info in the Rust core.
+# Smaller phone builds: no debug info in the Rust core. Panics must unwind (never abort):
+# the core catches them at its boundaries and heals (src/health.rs).
 [profile.release]
 strip = "debuginfo"
+panic = "unwind"
+
+[profile.dev]
+panic = "unwind"

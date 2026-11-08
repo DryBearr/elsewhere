@@ -37,6 +37,9 @@ use std::time::Duration;
 
 use runner::Inner;
 
+use crate::logs;
+use crate::problem::{self, Problem};
+
 pub type JobId = u64;
 
 /// How many jobs run at the same time in the app; the rest wait in order.
@@ -47,6 +50,10 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_LOG_LINES: usize = 5000;
 /// Finished jobs kept in the database; older ones are removed when jobs are opened.
 const KEEP_FINISHED: usize = 200;
+/// Default watchdog: no progress for this long means stalled...
+const STALL: Duration = Duration::from_secs(600);
+/// ...and this long without reacting to the interrupt means stuck.
+const GRACE: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -85,7 +92,7 @@ pub struct JobState {
     /// The item being worked on.
     pub current: Option<Current>,
     /// The latest error: of the job when it failed, else of the last failed item.
-    pub last_error: Option<String>,
+    pub last_error: Option<Problem>,
     /// How many lines the job's log has (see Jobs::logs).
     pub log_lines: usize,
 }
@@ -122,7 +129,7 @@ pub struct LogLine {
 /// What a kind of job does, given its params. Returns Err with a message when the whole job
 /// failed; problems with single items are reported through the handle and the job can
 /// still be Done.
-pub type Runner = Arc<dyn Fn(&Job, &str) -> Result<(), String> + Send + Sync>;
+pub type Runner = Arc<dyn Fn(&Job, &str) -> Result<(), Problem> + Send + Sync>;
 
 /// The jobs of the app, or of a test.
 pub struct Jobs {
@@ -133,13 +140,18 @@ impl Jobs {
     /// Jobs kept in memory only, running at most `max_running` at a time.
     pub fn new(max_running: usize) -> Jobs {
         Jobs {
-            inner: Inner::start(max_running.max(1), None),
+            inner: Inner::start(max_running.max(1), None, None),
         }
     }
 
     /// Jobs kept in the library database at `db`. Jobs from earlier runs come back:
     /// finished ones as history (the newest 200), unfinished ones as Interrupted.
     pub fn open(db: &Path, max_running: usize) -> Result<Jobs, String> {
+        Jobs::open_named(db, max_running, None)
+    }
+
+    /// `name` names the parts in `health` ("jobs" for the app's jobs; None makes one up).
+    fn open_named(db: &Path, max_running: usize, name: Option<&str>) -> Result<Jobs, String> {
         let mut store = store::Store::open(db)?;
         let saved = store.load()?;
         let next_id = store
@@ -151,8 +163,15 @@ impl Jobs {
             next_id,
         };
         Ok(Jobs {
-            inner: Inner::start(max_running.max(1), Some(restored)),
+            inner: Inner::start(max_running.max(1), Some(restored), name),
         })
+    }
+
+    /// How long a running job may show no progress before the watchdog interrupts what it
+    /// is doing (default 10 minutes), and how long it then has to react before it counts as
+    /// stuck (default 60 s): a stuck job fails and the app needs a restart.
+    pub fn set_watchdog(&self, stall: Duration, grace: Duration) {
+        self.inner.set_watchdog(stall, grace);
     }
 
     /// Says how to run jobs of `kind`. Register every kind before starting or resuming
@@ -160,7 +179,7 @@ impl Jobs {
     pub fn register(
         &self,
         kind: &str,
-        runner: impl Fn(&Job, &str) -> Result<(), String> + Send + Sync + 'static,
+        runner: impl Fn(&Job, &str) -> Result<(), Problem> + Send + Sync + 'static,
     ) {
         self.inner.register(kind, Arc::new(runner));
     }
@@ -234,7 +253,7 @@ pub fn open_global(db: &Path) -> Result<&'static Jobs, String> {
     if let Some(jobs) = GLOBAL.get() {
         return Ok(jobs);
     }
-    let jobs = Jobs::open(db, APP_MAX_RUNNING)?;
+    let jobs = Jobs::open_named(db, APP_MAX_RUNNING, Some("jobs"))?;
     Ok(GLOBAL.get_or_init(|| jobs))
 }
 
@@ -308,21 +327,38 @@ impl Job {
         });
     }
 
-    /// The current item failed; the job goes on. The error also goes to the log.
-    pub fn item_failed(&self, error: &str) {
-        let error = error.to_owned();
+    /// The current item failed; the job goes on. The problem goes to the job's log and the
+    /// core's log.
+    pub fn item_failed(&self, problem: &Problem) {
+        let position = self.inner.current_position(self.id);
+        problem::log(problem, "jobs", Some(self.id), position);
+        let problem = problem.clone();
         self.inner.change(self.id, true, |job| {
             job.state.failed += 1;
             job.state.current = None;
-            job.state.last_error = Some(error.clone());
-            job.write_log(Level::Error, error);
+            job.write_log(Level::Error, problem.text.clone());
+            job.state.last_error = Some(problem);
         });
     }
 
+    /// A line for the job's log (and, for warnings and errors, the core's log).
     pub fn log(&self, level: Level, message: &str) {
+        if level != Level::Info {
+            let line = match level {
+                Level::Error => logs::error("jobs", message),
+                _ => logs::warn("jobs", message),
+            };
+            line.job(self.id).write();
+        }
         let message = message.to_owned();
         self.inner
             .change(self.id, true, |job| job.write_log(level, message));
+    }
+
+    /// Says the job is still working when nothing visible changes (a long merge, a slow
+    /// server), so the watchdog does not take it for stuck.
+    pub fn keep_alive(&self) {
+        self.inner.keep_alive(self.id);
     }
 
     /// Whether someone asked the job to stop. Long work checks it between steps.
@@ -334,5 +370,11 @@ impl Job {
     /// blocks, like a download, be interrupted.
     pub fn on_cancel(&self, stop: impl Fn() + Send + Sync + 'static) {
         self.inner.on_cancel(self.id, Arc::new(stop));
+    }
+
+    /// Runs `interrupt` when the watchdog sees no progress for too long: the work should
+    /// stop what it is doing (not the whole job) and try that step again.
+    pub fn on_interrupt(&self, interrupt: impl Fn() + Send + Sync + 'static) {
+        self.inner.on_interrupt(self.id, Arc::new(interrupt));
     }
 }

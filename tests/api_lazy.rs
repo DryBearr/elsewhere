@@ -6,8 +6,10 @@ mod common;
 
 use std::time::{Duration, Instant};
 
-use common::{api_folders, server, url};
-use elsewhere::api::{self, ApiError, DemoOptions, JobStatus, MediaFormat, PlaylistOptions};
+use common::{api_folders, kind_of, server, url};
+use elsewhere::api::{
+    self, ApiError, DemoOptions, JobStatus, MediaFormat, PlaylistOptions, ProblemKind,
+};
 
 fn wait_until_finished(id: i64) -> api::JobState {
     let deadline = Instant::now() + Duration::from_secs(120);
@@ -32,10 +34,7 @@ fn start_is_cheap_and_python_starts_on_first_use() {
     // Before start: everything says NotReady, nothing panics.
     assert!(!api::core_status().started);
     let not_ready = |result: Result<(), ApiError>| {
-        assert!(
-            matches!(result, Err(ApiError::NotReady { .. })),
-            "{result:?}"
-        )
+        assert!(kind_of(&result) == Some(ProblemKind::Setup), "{result:?}")
     };
     not_ready(api::categories().map(drop));
     not_ready(api::jobs().map(drop));
@@ -54,10 +53,7 @@ fn start_is_cheap_and_python_starts_on_first_use() {
     let mut folders = api_folders("lazy");
     let mut relative = folders.clone();
     relative.media = "media".to_owned();
-    assert!(matches!(
-        api::start(relative, None),
-        Err(ApiError::BadArgs { .. })
-    ));
+    assert!(kind_of(&api::start(relative, None)) == Some(ProblemKind::Input));
     assert!(!api::core_status().started);
 
     // Start: cheap, no Python.
@@ -77,10 +73,7 @@ fn start_is_cheap_and_python_starts_on_first_use() {
     );
     api::start(folders.clone(), None).expect("starting again with the same folders is fine");
     folders.cache.push_str("-other");
-    assert!(matches!(
-        api::start(folders, None),
-        Err(ApiError::BadArgs { .. })
-    ));
+    assert!(kind_of(&api::start(folders, None)) == Some(ProblemKind::Input));
     assert_eq!(api::categories().unwrap().len(), 9);
 
     // A job that needs no Python leaves Python down.
@@ -109,4 +102,27 @@ fn start_is_cheap_and_python_starts_on_first_use() {
     assert!(api::core_status().ytdlp_started);
     let log = api::job_logs(id, 0).unwrap();
     assert_eq!(log[0].message, "Starting yt-dlp…", "{log:?}");
+
+    // The core is healthy until a part breaks; then the app must restart.
+    let health = api::core_health();
+    assert!(!health.needs_restart, "{health:?}");
+    for name in ["jobs-delivery", "jobs-watchdog"] {
+        assert!(
+            health
+                .parts
+                .iter()
+                .any(|part| part.name == name && part.state == api::PartState::Healthy),
+            "{health:?}"
+        );
+    }
+    api::simulate_broken_core();
+    let health = api::core_health();
+    assert!(health.needs_restart);
+    let broken = health
+        .parts
+        .iter()
+        .find(|part| part.name == "self-test")
+        .unwrap();
+    assert_eq!(broken.state, api::PartState::Broken);
+    assert!(broken.reason.is_some());
 }

@@ -6,11 +6,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use super::*;
+use crate::health;
+use crate::problem::Kind;
 
 /// Jobs in memory with one runner for the kind "test".
 fn jobs_with(
     max_running: usize,
-    runner: impl Fn(&Job, &str) -> Result<(), String> + Send + Sync + 'static,
+    runner: impl Fn(&Job, &str) -> Result<(), Problem> + Send + Sync + 'static,
 ) -> Jobs {
     let jobs = Jobs::new(max_running);
     jobs.register("test", runner);
@@ -158,7 +160,7 @@ fn log_lines_are_never_dropped() {
             let level = [Level::Info, Level::Warning, Level::Error][n % 3];
             job.log(level, &format!("line {n}"));
         }
-        job.item_failed("one item broke");
+        job.item_failed(&Problem::new(Kind::Unavailable, "one item broke", "test"));
         Ok(())
     });
     let seen = recording(&jobs);
@@ -166,8 +168,8 @@ fn log_lines_are_never_dropped() {
     let last = wait_finished(&jobs, &seen, id);
     assert_eq!(last.log_lines, 501);
     assert_eq!(
-        (last.failed, last.last_error.as_deref()),
-        (1, Some("one item broke"))
+        (last.failed, last.last_error.map(|problem| problem.text)),
+        (1, Some("one item broke".to_owned()))
     );
     let lines = jobs.logs(id, 0);
     assert_eq!(lines.len(), 501);
@@ -185,20 +187,22 @@ fn log_lines_are_never_dropped() {
 #[test]
 fn failing_and_panicking_work_fails_the_job() {
     let jobs = jobs_with(2, |_, params| match params {
-        "fail" => Err("no network".to_owned()),
+        "fail" => Err(problem::from_message("no network: timed out")),
         "panic" => panic!("bug in the work"),
         _ => Ok(()),
     });
     let seen = recording(&jobs);
     let failing = start(&jobs, "Fails", "fail");
     let panicking = start(&jobs, "Panics", "panic");
-    for (id, message) in [(failing, "no network"), (panicking, "bug in the work")] {
+    for (id, kind, detail) in [
+        (failing, Kind::Network, "no network"),
+        (panicking, Kind::Bug, "bug in the work"),
+    ] {
         let last = wait_finished(&jobs, &seen, id);
         assert_eq!(last.status, Status::Failed);
-        assert!(
-            last.last_error.as_deref().unwrap().contains(message),
-            "{last:?}"
-        );
+        let problem = last.last_error.unwrap();
+        assert_eq!(problem.kind, kind);
+        assert!(problem.detail.contains(detail), "{problem:?}");
         assert_eq!(jobs.logs(id, 0).last().unwrap().level, Level::Error);
     }
     // The jobs keep working after a panic.
@@ -322,7 +326,7 @@ fn many_jobs_and_updates_at_once() {
                 job.progress(bytes, Some(200), None, None);
             }
             if position % 7 == 0 {
-                job.item_failed("broken");
+                job.item_failed(&Problem::new(Kind::Unavailable, "broken", "test"));
             } else {
                 job.item_done();
             }
@@ -533,4 +537,239 @@ fn forgotten_jobs_are_gone_from_the_database() {
     };
     let jobs = Jobs::open(&db, 1).unwrap();
     assert!(jobs.get(id).is_none());
+}
+
+#[test]
+fn a_failed_job_keeps_its_problem_across_a_restart() {
+    let db = database("problem");
+    let id = {
+        let jobs = Jobs::open(&db, 1).unwrap();
+        jobs.register("test", |_, _| {
+            Err(problem::from_message("HTTP Error 503: Service Unavailable"))
+        });
+        let seen = recording(&jobs);
+        let id = start(&jobs, "Server down", "");
+        wait_finished(&jobs, &seen, id);
+        id
+    };
+    let jobs = Jobs::open(&db, 1).unwrap();
+    let problem = jobs.get(id).unwrap().last_error.unwrap();
+    assert_eq!((problem.kind, problem.retry), (Kind::Network, true));
+    assert!(problem.detail.contains("503"), "{problem:?}");
+}
+
+// --- Healing ----------------------------------------------------------------------------
+
+fn part(jobs: &Jobs, suffix: &str) -> health::State {
+    health::state(&format!("{}-{suffix}", jobs.inner.name))
+}
+
+fn restarts(jobs: &Jobs, suffix: &str) -> usize {
+    let name = format!("{}-{suffix}", jobs.inner.name);
+    health::parts()
+        .into_iter()
+        .find(|part| part.name == name)
+        .map_or(0, |part| part.restarts)
+}
+
+#[test]
+fn delivery_heals_after_a_crash_and_loses_nothing() {
+    health::set_restart_pauses([Duration::from_millis(1); 3]);
+    let db = database("delivery-crash");
+    let id = {
+        let jobs = Jobs::open(&db, 1).unwrap();
+        jobs.register("test", |job, _| {
+            job.set_total(2);
+            for position in 1..=2 {
+                job.item_started(position, "item");
+                job.log(Level::Info, &format!("saved {position}"));
+                job.item_done();
+            }
+            Ok(())
+        });
+        let seen = recording(&jobs);
+        jobs.inner.faults.panic_delivery.store(2, Ordering::SeqCst);
+        let id = start(&jobs, "Through a crash", "");
+        let last = wait_finished(&jobs, &seen, id);
+        assert_eq!((last.status, last.done), (Status::Done, 2));
+        assert_eq!(restarts(&jobs, "delivery"), 2);
+        assert_eq!(part(&jobs, "delivery"), health::State::Healthy);
+        id
+    };
+    // What the app saw was also saved, log lines included.
+    let jobs = Jobs::open(&db, 1).unwrap();
+    let state = jobs.get(id).unwrap();
+    assert_eq!(
+        (state.status, state.done, state.log_lines),
+        (Status::Done, 2, 2)
+    );
+    assert_eq!(jobs.logs(id, 0).len(), 2);
+}
+
+#[test]
+fn saving_heals_after_a_few_failures() {
+    let db = database("save-heals");
+    let id = {
+        let jobs = Jobs::open(&db, 1).unwrap();
+        jobs.register("test", |job, _| {
+            job.log(Level::Warning, "kept through failed saves");
+            Ok(())
+        });
+        let seen = recording(&jobs);
+        jobs.inner.faults.fail_saves.store(2, Ordering::SeqCst);
+        let id = start(&jobs, "Saved in the end", "");
+        wait_finished(&jobs, &seen, id);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while jobs.inner.faults.fail_saves.load(Ordering::SeqCst) > 0 {
+            assert!(Instant::now() < deadline, "the saves were not tried again");
+            thread::sleep(Duration::from_millis(5));
+        }
+        id
+    };
+    let jobs = Jobs::open(&db, 1).unwrap();
+    let state = jobs.get(id).unwrap();
+    assert_eq!((state.status, state.log_lines), (Status::Done, 1));
+    assert_eq!(jobs.logs(id, 0)[0].message, "kept through failed saves");
+    assert_eq!(part(&jobs, "store"), health::State::Healthy);
+}
+
+#[test]
+fn a_store_that_keeps_failing_is_broken_but_the_app_still_sees_the_jobs() {
+    let db = database("save-broken");
+    let jobs = Jobs::open(&db, 1).unwrap();
+    jobs.register("test", |_, _| Ok(()));
+    let seen = recording(&jobs);
+    jobs.inner
+        .faults
+        .fail_saves
+        .store(usize::MAX, Ordering::SeqCst);
+    let id = start(&jobs, "Not saved", "");
+    assert_eq!(wait_finished(&jobs, &seen, id).status, Status::Done);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !matches!(part(&jobs, "store"), health::State::Broken(_)) {
+        assert!(
+            Instant::now() < deadline,
+            "the store never counted as broken"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert!(health::needs_restart());
+    // Once the disk works again, what waited is saved after all.
+    jobs.inner.faults.fail_saves.store(0, Ordering::SeqCst);
+    drop(jobs);
+    let jobs = Jobs::open(&db, 1).unwrap();
+    assert_eq!(jobs.get(id).unwrap().status, Status::Done);
+}
+
+#[test]
+fn a_stalled_job_is_interrupted_and_tries_again() {
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&interrupted);
+    let jobs = jobs_with(1, move |job, _| {
+        let set = Arc::clone(&flag);
+        job.on_interrupt(move || set.store(true, Ordering::SeqCst));
+        job.set_total(1);
+        job.item_started(1, "hangs once");
+        // A download that hangs until the watchdog interrupts it...
+        while !flag.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(5));
+        }
+        // ...and then works on the second try.
+        job.item_done();
+        Ok(())
+    });
+    jobs.set_watchdog(Duration::from_millis(100), Duration::from_secs(5));
+    let seen = recording(&jobs);
+    let id = start(&jobs, "Stalls", "");
+    let last = wait_finished(&jobs, &seen, id);
+    assert_eq!((last.status, last.done), (Status::Done, 1));
+    let lines = jobs.logs(id, 0);
+    assert!(
+        lines.iter().any(|line| line.level == Level::Warning
+            && line.message.starts_with("No progress for 100 ms")),
+        "{lines:?}"
+    );
+    assert_eq!(part(&jobs, "workers"), health::State::Healthy);
+}
+
+#[test]
+fn signs_of_life_keep_the_watchdog_away() {
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&interrupted);
+    let jobs = jobs_with(1, move |job, _| {
+        let set = Arc::clone(&flag);
+        job.on_interrupt(move || set.store(true, Ordering::SeqCst));
+        // Five times longer than the stall time, quiet but alive.
+        for _ in 0..150 {
+            thread::sleep(Duration::from_millis(10));
+            job.keep_alive();
+        }
+        Ok(())
+    });
+    jobs.set_watchdog(Duration::from_millis(300), Duration::from_millis(300));
+    let seen = recording(&jobs);
+    let id = start(&jobs, "Busy but quiet", "");
+    assert_eq!(wait_finished(&jobs, &seen, id).status, Status::Done);
+    assert!(!interrupted.load(Ordering::SeqCst));
+    assert!(jobs.logs(id, 0).is_empty());
+}
+
+#[test]
+fn a_stuck_job_fails_and_the_core_asks_for_a_restart() {
+    let release = Arc::new(AtomicBool::new(false));
+    let held = Arc::clone(&release);
+    let jobs = jobs_with(1, move |job, _| {
+        job.item_started(1, "ignores interrupts");
+        while !held.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    });
+    jobs.set_watchdog(Duration::from_millis(50), Duration::from_millis(100));
+    let seen = recording(&jobs);
+    let id = start(&jobs, "Stuck", "");
+    let last = wait_finished(&jobs, &seen, id);
+    assert_eq!(last.status, Status::Failed);
+    let problem = last.last_error.unwrap();
+    assert_eq!(problem.kind, Kind::Bug);
+    assert!(problem.detail.contains("stopped responding"), "{problem:?}");
+    assert!(matches!(part(&jobs, "workers"), health::State::Broken(_)));
+    assert!(health::needs_restart());
+    // If the thread comes back after all, the job stays failed.
+    release.store(true, Ordering::SeqCst);
+    thread::sleep(Duration::from_millis(50));
+    assert_eq!(jobs.get(id).unwrap().status, Status::Failed);
+}
+
+#[test]
+fn a_log_that_got_ahead_of_its_job_still_loads() {
+    // A save from an older run that lands late can leave log_lines behind the saved lines.
+    let db = database("log-ahead");
+    let id = {
+        let jobs = Jobs::open(&db, 1).unwrap();
+        jobs.register("test", |_, _| Ok(()));
+        let id = start(&jobs, "Behind", "");
+        let seen = recording(&jobs);
+        wait_finished(&jobs, &seen, id);
+        id
+    };
+    {
+        let db = crate::db::open(&db).unwrap();
+        db.execute(
+            "UPDATE job SET status = 'running', log_lines = 0 WHERE id = ?1",
+            [id as i64],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO job_log (job_id, number, level, message, at) VALUES (?1, 1, 'info', 'saved late', 0)",
+            [id as i64],
+        )
+        .unwrap();
+    }
+    let jobs = Jobs::open(&db, 1).unwrap();
+    let state = jobs.get(id).unwrap();
+    assert_eq!((state.status, state.log_lines), (Status::Interrupted, 2));
+    let lines = jobs.logs(id, 0);
+    assert_eq!(lines.len(), 2);
+    assert!(lines[1].message.starts_with("Interrupted"), "{lines:?}");
 }

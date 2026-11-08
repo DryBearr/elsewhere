@@ -9,6 +9,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_init.sql"),
     include_str!("../migrations/0002_playlists.sql"),
     include_str!("../migrations/0003_jobs.sql"),
+    include_str!("../migrations/0004_job_problems.sql"),
 ];
 
 /// Opens the database, sets connection pragmas and applies pending migrations.
