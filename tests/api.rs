@@ -539,3 +539,57 @@ fn a_saved_playlist_reads_back_from_the_library() {
         Some(ProblemKind::Unavailable)
     );
 }
+
+#[test]
+fn marks_and_resume_points_through_the_api() {
+    core();
+    let options = PlaylistOptions {
+        format: MediaFormat::Video { max_height: None },
+        lyrics: false,
+        limit: None,
+    };
+    let id = api::save_playlist(url("/library-playlist.html"), options).unwrap();
+    assert_eq!(wait_for(id, finished).status, JobStatus::Done);
+    let videos = api::categories()
+        .unwrap()
+        .into_iter()
+        .find(|tab| tab.name == "Videos")
+        .unwrap();
+    let list = api::collections(videos.id)
+        .unwrap()
+        .into_iter()
+        .find(|list| list.name == "Library Playlist")
+        .unwrap();
+    let item = api::collection_items(list.id, None, 10).unwrap().entries[0]
+        .item
+        .clone();
+    // The test files are 2 s clips: they always start over, and finishing counts a play.
+    assert_eq!(
+        api::start_play(item.id).unwrap(),
+        api::PlayStart {
+            position_ms: 0,
+            resumed: false
+        }
+    );
+    assert!(api::save_progress(item.id, 1990, Some(2000)).unwrap());
+    let progress = api::item(item.id).unwrap().summary.progress.unwrap();
+    assert!(progress.done && progress.plays >= 1, "{progress:?}");
+    api::set_favorite(item.id, true).unwrap();
+    api::set_rating(item.id, Some(9)).unwrap();
+    let marked = api::item(item.id).unwrap().summary;
+    assert_eq!((marked.favorite, marked.rating), (true, Some(9)));
+    api::set_watched(item.id, false).unwrap();
+    assert!(!api::item(item.id).unwrap().summary.progress.unwrap().done);
+    assert_eq!(
+        kind_of(&api::set_rating(item.id, Some(11))),
+        Some(ProblemKind::Input)
+    );
+    assert!(
+        !api::save_progress(i64::MAX, 1, None).unwrap(),
+        "a gone item: nothing to save"
+    );
+    assert_eq!(
+        kind_of(&api::start_play(i64::MAX)),
+        Some(ProblemKind::Unavailable)
+    );
+}

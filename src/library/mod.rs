@@ -15,8 +15,11 @@
 //! - **One connection, healed.** Opened once and reused; a call that fails because the
 //!   connection broke reopens it and runs once more. Errors are Problems.
 
+mod marks;
 #[cfg(test)]
 mod tests;
+
+pub use marks::{PlayStart, Rules};
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -161,6 +164,9 @@ pub struct Library {
     /// The media folder, with links resolved.
     media: PathBuf,
     db: Mutex<Option<Connection>>,
+    /// Items whose current play was counted already (see `start_play`).
+    counted: Mutex<std::collections::HashMap<i64, bool>>,
+    rules: Rules,
     #[cfg(test)]
     fail_next: std::sync::atomic::AtomicUsize,
 }
@@ -180,6 +186,8 @@ impl Library {
             path: db.to_owned(),
             media,
             db: Mutex::new(Some(connection)),
+            counted: Mutex::new(std::collections::HashMap::new()),
+            rules: Rules::default(),
             #[cfg(test)]
             fail_next: std::sync::atomic::AtomicUsize::new(0),
         })
@@ -454,14 +462,14 @@ impl Library {
     fn read<T>(
         &self,
         doing: &str,
-        read: impl Fn(&Connection) -> rusqlite::Result<T>,
+        read: impl Fn(&mut Connection) -> rusqlite::Result<T>,
     ) -> Result<T, Problem> {
         let mut db = self.lock();
         for attempt in 0..2 {
             if db.is_none() {
                 *db = Some(crate::db::open(&self.path).map_err(|err| failed(&err, doing))?);
             }
-            let Some(connection) = db.as_ref() else {
+            let Some(connection) = db.as_mut() else {
                 continue;
             };
             #[cfg(test)]
@@ -486,6 +494,21 @@ impl Library {
         Err(Problem::bug(format!(
             "{doing}: the connection could not be reopened"
         )))
+    }
+
+    /// Runs `write` in one transaction that takes the write lock at once (so it never has to
+    /// upgrade a read lock and fail): all of it is saved, or none. Retried like `read`.
+    fn write<T>(
+        &self,
+        doing: &str,
+        write: impl Fn(&rusqlite::Transaction) -> rusqlite::Result<T>,
+    ) -> Result<T, Problem> {
+        self.read(doing, |db| {
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let value = write(&tx)?;
+            tx.commit()?;
+            Ok(value)
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, Option<Connection>> {
