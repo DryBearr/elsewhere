@@ -743,3 +743,73 @@ fn a_broken_connection_is_reopened_once() {
         "and fine again after"
     );
 }
+
+#[test]
+fn the_media_folder_moving_does_not_lose_the_library() {
+    // iOS gives an updated app a new container: every stored absolute path is stale.
+    let f = fixture("moved");
+    let song = f.song("Song", Some("album/song.m4a"));
+    fs::write(f.music.join("album/song.jpg"), b"jpeg").unwrap();
+    f.db.execute(
+        "UPDATE item SET cover = ?2 WHERE id = ?1",
+        params![song, f.music.join("album/song.jpg").to_str()],
+    )
+    .unwrap();
+    let list = f.playlist("List", &[song]);
+    f.db.execute(
+        "UPDATE collection SET cover = ?2 WHERE id = ?1",
+        params![list, f.music.join("album/song.jpg").to_str()],
+    )
+    .unwrap();
+    let new_home = f.dir.join("new-container");
+    fs::create_dir_all(&new_home).unwrap();
+    let moved = new_home.join("media");
+    fs::rename(&f.media, &moved).unwrap();
+
+    let library = Library::open(&f.dir.join("library.db"), &moved).unwrap();
+    let row = &library.collection_items(list, None, 10).unwrap().rows[0];
+    assert!(!row.item.missing, "found in the moved folder");
+    let real_moved = fs::canonicalize(&moved).unwrap();
+    assert!(row.item.cover.as_deref().unwrap().starts_with(&real_moved));
+    assert!(
+        library
+            .collection(list)
+            .unwrap()
+            .cover
+            .unwrap()
+            .starts_with(&real_moved)
+    );
+    let file = library.item_file(song).unwrap();
+    assert_eq!(file, real_moved.join("Music/album/song.m4a"));
+
+    // A stored path that never ran through a media folder stays as it was (and is refused).
+    f.db.execute("UPDATE library SET root = '/somewhere/else/Music'", [])
+        .unwrap();
+    assert_eq!(
+        library.item_file(song).unwrap_err().kind,
+        ProblemKind::Unavailable
+    );
+}
+
+#[test]
+fn moved_paths_are_rebased_only_through_the_media_folder_name() {
+    let media = Path::new("/new/Documents/Media");
+    assert_eq!(
+        located("/old/Documents/Media/Videos/x [1]/001.mp4", media),
+        Path::new("/new/Documents/Media/Videos/x [1]/001.mp4")
+    );
+    // The last folder of that name counts.
+    assert_eq!(
+        located("/Media/old/Documents/Media/Music", media),
+        Path::new("/new/Documents/Media/Music")
+    );
+    assert_eq!(located("/old/Documents/Media", media), media);
+    assert_eq!(
+        located("/elsewhere/Music", media),
+        Path::new("/elsewhere/Music")
+    );
+    assert_eq!(
+        located("/new/Documents/Media/Music", media),
+        Path::new("/new/Documents/Media/Music")
+    );
+}

@@ -415,7 +415,7 @@ impl Library {
                 format!("item {id} has the path {path:?}"),
             ));
         }
-        let root = match fs::canonicalize(&root) {
+        let root = match fs::canonicalize(located(&root, &self.media)) {
             Ok(root) => root,
             Err(err) => return Err(missing(format!("library folder {root}: {err}"))),
         };
@@ -590,15 +590,36 @@ fn non_empty(text: Option<String>) -> Option<String> {
     text.filter(|text| !text.trim().is_empty())
 }
 
+/// Where a stored absolute path is now. iOS moves an app's folders when the app is
+/// updated (the container's id changes), and Android can move them to another storage:
+/// a stored path that no longer exists but runs through a folder named like the media
+/// folder is taken to mean the same place inside today's media folder.
+fn located(stored: &str, media: &Path) -> PathBuf {
+    let path = Path::new(stored);
+    if path.exists() || path.starts_with(media) {
+        return path.to_owned();
+    }
+    let Some(name) = media.file_name() else {
+        return path.to_owned();
+    };
+    let parts: Vec<Component> = path.components().collect();
+    match parts.iter().rposition(|part| part.as_os_str() == name) {
+        Some(at) => parts[at + 1..]
+            .iter()
+            .fold(media.to_owned(), |rebased, part| rebased.join(part)),
+        None => path.to_owned(),
+    }
+}
+
 /// An image to show: only if it is a file inside the media folder (absolute, or relative to
 /// the item's library folder).
 fn checked_cover(cover: Option<String>, root: Option<&str>, media: &Path) -> Option<PathBuf> {
     let cover = non_empty(cover)?;
     let path = Path::new(&cover);
     let path = if path.is_absolute() {
-        path.to_owned()
+        located(&cover, media)
     } else {
-        Path::new(root?).join(path)
+        located(root?, media).join(path)
     };
     let real = fs::canonicalize(path).ok()?;
     (real.starts_with(media) && real.is_file()).then_some(real)
@@ -648,7 +669,7 @@ fn summary_row(row: &Row, at: usize, media: &Path) -> rusqlite::Result<ItemSumma
     let missing = missing_since.is_some()
         || (kind == ItemKind::Entry
             && match (&path, &root) {
-                (Some(path), Some(root)) => !Path::new(root).join(path).is_file(),
+                (Some(path), Some(root)) => !located(root, media).join(path).is_file(),
                 _ => true,
             });
     let progress = match row.get::<_, Option<i64>>(at + 15)? {

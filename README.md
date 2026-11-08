@@ -98,6 +98,7 @@ Tests break things on purpose: delivery crashes, failing saves, a stuck and a st
 - **Bad data never fails a list:** a deleted file or cover, missing fields or odd values in `extra` leave the row in place, marked `missing` or without a cover.
 - **Pages:** playlists come 100 entries at a time (at most 500), ordered by position and entry id, with an opaque cursor: rows added or removed meanwhile never repeat or vanish among the rest. Each row carries its progress (position, percent, done, plays).
 - **One connection, healed:** reused for every call, reopened once when it breaks.
+- **Moved folders:** iOS gives an updated app a new container path (and Android can move an app to other storage). A stored path that is gone but runs through a folder named like the media folder is found again inside today's media folder.
 
 ## Player module
 
