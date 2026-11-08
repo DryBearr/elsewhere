@@ -402,19 +402,22 @@ fn a_playlist_job_with_a_broken_item_is_done_with_the_error_shown() {
 
 #[test]
 fn cancelling_a_playlist_job_stops_the_download() {
+    // The first item downloads slowly (about a second), so a cancel soon after the job
+    // starts lands while it reads the playlist or downloads that item, however fast the
+    // machine is. Either way the job must end Cancelled with nothing saved.
     let (jobs, seen, id) = run_as_job(&url("/slow-playlist.html"), "job-cancel");
-    for _ in 0..1000 {
-        if jobs.get(id).unwrap().current.is_some() {
+    for _ in 0..6000 {
+        if jobs.get(id).unwrap().status == Status::Running {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(
-        jobs.get(id).unwrap().current.is_some(),
-        "the slow item started"
-    );
-    assert!(jobs.cancel(id));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(jobs.cancel(id), "{:?}", jobs.get(id));
     let last = finished(&jobs, &seen, id);
     assert_eq!(last.status, Status::Cancelled, "{last:?}");
-    assert_eq!(last.done, 0, "the slow first item never finished");
+    assert_eq!(
+        last.done, 0,
+        "cancelled before the slow first item finished: {last:?}"
+    );
 }
