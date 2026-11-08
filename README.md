@@ -15,6 +15,12 @@ ios/                Swift + SwiftUI app (XcodeGen)
 scripts/            build the parts the apps bundle
 ```
 
+How the apps use the core:
+
+- **Start:** `start(folders, python_bundle)` runs first at app start (`ElsewhereApplication` / `ElsewhereApp.init`). It is cheap; Python and yt-dlp start on the first job or call that needs them (Android hands over `python.tar` through `PythonBundle` then). `core_status()` says what is loaded.
+- **Jobs:** one `JobsStore` per app (`JobsStore.kt`, `JobsStore.swift`) is the job listener. It keeps the newest revision of each job and every screen reads it from there; calls into the core run off the UI thread. Screens: Downloads (job cards with Cancel / Resume / Discard / Retry / Remove, and each job's log), Add (save a playlist, run a demo job), Library.
+- **Self-test:** debug builds log every job state the store receives; `scripts/selftest_android.sh` and `scripts/selftest_ios.sh` kill a demo job halfway, check it comes back Interrupted, resume it to Done (store equal to core), discard another, and start yt-dlp lazily, on the emulator and simulator.
+
 Plugging a feature in or out: a module in `src/` (with a feature flag when it carries weight), its section in `api.rs`, and one screen file per app (`android/.../XScreen.kt`, `ios/Elsewhere/XView.swift`), listed with one line in `MainActivity.kt` and `ElsewhereApp.swift`.
 
 ## yt-dlp module
