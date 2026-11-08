@@ -25,6 +25,7 @@ use std::sync::Arc;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
+use crate::jobs::{Job, Level};
 use crate::ytdlp::{self, Cancel, Event};
 
 /// What to save each item as.
@@ -94,11 +95,19 @@ pub enum Progress {
         position: usize,
         title: String,
     },
-    /// Bytes of the current item's download.
+    /// Bytes of the current item's download, with speed (bytes per second) and seconds left.
     Downloading {
         position: usize,
         done: u64,
         total: Option<u64>,
+        speed: Option<f64>,
+        eta: Option<u64>,
+    },
+    /// A warning or error yt-dlp reported while saving an item.
+    Log {
+        position: usize,
+        level: Level,
+        message: String,
     },
     Done {
         position: usize,
@@ -221,12 +230,33 @@ where
             &folder,
             &format_args,
             cancel,
-            move |done, total| {
-                progress(Progress::Downloading {
+            move |event| match event {
+                Event::Progress {
+                    done,
+                    total,
+                    speed,
+                    eta,
+                    ..
+                } => progress(Progress::Downloading {
                     position,
                     done,
                     total,
-                })
+                    speed,
+                    eta,
+                }),
+                Event::Log { level, message } => {
+                    let level = match level {
+                        ytdlp::Level::Warning => Level::Warning,
+                        ytdlp::Level::Error => Level::Error,
+                        ytdlp::Level::Debug | ytdlp::Level::Info => return,
+                    };
+                    progress(Progress::Log {
+                        position,
+                        level,
+                        message,
+                    })
+                }
+                _ => {}
             },
         );
         match downloaded.and_then(|item| {
@@ -282,6 +312,115 @@ where
         items,
         failed,
     })
+}
+
+/// The params of a playlist job: its link and options, as JSON. Kept with the job, so
+/// it can run again after the app was closed.
+pub fn job_params(link: &str, options: &Options) -> String {
+    let (format, max_height) = match options.format {
+        Format::Audio => ("audio", None),
+        Format::Video { max_height } => ("video", max_height),
+    };
+    json!({
+        "link": link,
+        "format": format,
+        "max_height": max_height,
+        "lyrics": options.lyrics,
+        "limit": options.limit,
+    })
+    .to_string()
+}
+
+/// The runner for playlist jobs: reads `job_params` and calls `run`. The app registers it
+/// once, with its own folders (they can move between app versions, so they are not
+/// part of the params):
+///
+/// ```ignore
+/// jobs.register("playlist", move |job, params| playlists::run_job(job, &db, &media, params));
+/// let id = jobs.start("playlist", &link, &playlists::job_params(&link, &options))?;
+/// ```
+pub fn run_job(job: &Job, db: &Path, media: &Path, params: &str) -> Result<(), String> {
+    let value: Value =
+        serde_json::from_str(params).map_err(|err| format!("bad playlist job params: {err}"))?;
+    let link = text(&value, &["link"]).ok_or("the playlist job has no link")?;
+    let format = match value["format"].as_str() {
+        Some("audio") => Format::Audio,
+        Some("video") => Format::Video {
+            max_height: value["max_height"].as_u64().map(|height| height as u32),
+        },
+        other => return Err(format!("unknown playlist format {other:?}")),
+    };
+    let options = Options {
+        format,
+        lyrics: value["lyrics"].as_bool().unwrap_or(false),
+        limit: value["limit"].as_u64().map(|limit| limit as usize),
+    };
+    run(job, db, media, &link, &options)
+}
+
+/// Runs `save` as a job (see `jobs`): the job's state follows the playlist item by item,
+/// yt-dlp's warnings and errors go to the job's log, and cancelling the job stops the
+/// download. Failed items are reported but do not fail the job.
+///
+pub fn run(
+    job: &Job,
+    db: &Path,
+    media: &Path,
+    link: &str,
+    options: &Options,
+) -> Result<(), String> {
+    let cancel = Cancel::new();
+    let stop = cancel.clone();
+    job.on_cancel(move || stop.cancel());
+    let reporter = job.clone();
+    let saved = save(
+        db,
+        media,
+        link,
+        options,
+        move |progress| report(&reporter, progress),
+        &cancel,
+    );
+    match saved {
+        Ok(saved) => {
+            let total = saved.items.len() + saved.failed.len();
+            let message = format!(
+                "Saved {} of {total} into {}",
+                saved.items.len(),
+                saved.folder.display()
+            );
+            job.log(Level::Info, &message);
+            Ok(())
+        }
+        // The job ends as Cancelled; nothing more to say.
+        Err(Error::YtDlp(ytdlp::Error::Cancelled)) => Ok(()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// Turns one step of `save` into the job's state and log.
+fn report(job: &Job, progress: Progress) {
+    match progress {
+        Progress::Listed { title, total } => {
+            job.set_title(&title);
+            job.set_total(total);
+        }
+        Progress::Started { position, title } => job.item_started(position, &title),
+        Progress::Downloading {
+            done,
+            total,
+            speed,
+            eta,
+            ..
+        } => job.progress(done, total, speed, eta),
+        Progress::Done { .. } | Progress::Skipped { .. } => job.item_done(),
+        Progress::Failed { position, error } => job.item_failed(&format!("#{position}: {error}")),
+        Progress::Log {
+            position,
+            level,
+            message,
+        } => job.log(level, &format!("#{position}: {message}")),
+    }
 }
 
 /// A link's title and entries, read without downloading anything.
@@ -402,7 +541,7 @@ fn download(
     folder: &Path,
     format_args: &[&str],
     cancel: &Cancel,
-    on_bytes: impl Fn(u64, Option<u64>) + Send + Sync + 'static,
+    on_event: impl Fn(Event) + Send + Sync + 'static,
 ) -> Result<Downloaded, Error> {
     // yt-dlp fills in the title and id and makes the name safe for the file system.
     let name = format!("{position:03} - %(title).100B [%(id)s]");
@@ -421,16 +560,7 @@ fn download(
     ];
     args.extend_from_slice(format_args);
 
-    let done = ytdlp::download(
-        &entry.url,
-        &args,
-        move |event| {
-            if let Event::Progress { done, total, .. } = event {
-                on_bytes(done, total);
-            }
-        },
-        cancel,
-    )?;
+    let done = ytdlp::download(&entry.url, &args, on_event, cancel)?;
     let file = done
         .files
         .into_iter()
@@ -880,6 +1010,27 @@ mod tests {
             "-f b -S res,vcodec:h264,acodec:aac,ext:mp4:m4a"
         );
         assert_eq!(args(Format::Audio, true), "-f ba[ext=m4a]/ba");
+    }
+
+    #[test]
+    fn job_params_keep_link_and_options() {
+        let options = Options {
+            format: Format::Video {
+                max_height: Some(720),
+            },
+            lyrics: true,
+            limit: Some(3),
+        };
+        let params: Value = serde_json::from_str(&job_params("https://x/list", &options)).unwrap();
+        assert_eq!(params["link"], "https://x/list");
+        assert_eq!(
+            (params["format"].as_str(), params["max_height"].as_u64()),
+            (Some("video"), Some(720))
+        );
+        assert_eq!(
+            (params["lyrics"].as_bool(), params["limit"].as_u64()),
+            (Some(true), Some(3))
+        );
     }
 
     #[test]

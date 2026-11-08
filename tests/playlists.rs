@@ -8,6 +8,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, Once};
 
 use common::{folder, ready, url};
+use elsewhere::jobs::{JobState, Jobs, Level, Status};
 use elsewhere::playlists::{self, Format, Options, Progress};
 use elsewhere::ytdlp::{self, Cancel};
 use rusqlite::Connection;
@@ -321,4 +322,102 @@ fn real_youtube_video_quality() {
     let file = &saved.items[0].file;
     assert_eq!(file.extension().unwrap(), "mp4");
     println!("{}", file.display());
+}
+
+/// Runs a playlist save as a job on its own Jobs, the way the app will: the runner is
+/// registered with the folders, the job started with params. Records every state.
+fn run_as_job(link: &str, name: &str) -> (Jobs, Arc<Mutex<Vec<JobState>>>, u64) {
+    setup();
+    let dir = folder(name);
+    let jobs = Jobs::new(2);
+    jobs.register("playlist", move |job, params| {
+        playlists::run_job(job, &dir.join("library.db"), &dir, params)
+    });
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    jobs.set_listener(move |state| sink.lock().unwrap().push(state));
+    let id = jobs
+        .start("playlist", link, &playlists::job_params(link, &options()))
+        .unwrap();
+    (jobs, seen, id)
+}
+
+fn finished(jobs: &Jobs, seen: &Mutex<Vec<JobState>>, id: u64) -> JobState {
+    for _ in 0..3000 {
+        let state = jobs.get(id).unwrap();
+        let delivered = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|seen| seen.revision == state.revision);
+        if state.status.is_finished() && delivered {
+            return state;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    panic!("job did not finish: {:?}", jobs.get(id));
+}
+
+#[test]
+fn a_playlist_job_reports_items_and_ends_done() {
+    let (jobs, seen, id) = run_as_job(&url("/playlist.html"), "job");
+    let last = finished(&jobs, &seen, id);
+    assert_eq!(last.status, Status::Done, "{last:?}");
+    assert_eq!(
+        (last.title.as_str(), last.done, last.failed, last.total),
+        ("Test Playlist", 2, 0, Some(2))
+    );
+    let states = seen.lock().unwrap().clone();
+    assert!(
+        states
+            .windows(2)
+            .all(|pair| pair[0].revision < pair[1].revision)
+    );
+    let log = jobs.logs(id, 0);
+    assert!(
+        log.last().unwrap().message.starts_with("Saved 2 of 2"),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_playlist_job_with_a_broken_item_is_done_with_the_error_shown() {
+    let (jobs, seen, id) = run_as_job(&url("/broken-playlist.html"), "job-broken");
+    let last = finished(&jobs, &seen, id);
+    assert_eq!(
+        (last.status, last.done, last.failed),
+        (Status::Done, 1, 1),
+        "{last:?}"
+    );
+    assert!(
+        last.last_error.as_deref().unwrap().starts_with("#2"),
+        "{last:?}"
+    );
+    assert!(
+        jobs.logs(id, 0)
+            .iter()
+            .any(|line| line.level == Level::Error && line.message.contains("404"))
+    );
+}
+
+#[test]
+fn cancelling_a_playlist_job_stops_the_download() {
+    // The first item downloads slowly (about a second), so a cancel soon after the job
+    // starts lands while it reads the playlist or downloads that item, however fast the
+    // machine is. Either way the job must end Cancelled with nothing saved.
+    let (jobs, seen, id) = run_as_job(&url("/slow-playlist.html"), "job-cancel");
+    for _ in 0..6000 {
+        if jobs.get(id).unwrap().status == Status::Running {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(jobs.cancel(id), "{:?}", jobs.get(id));
+    let last = finished(&jobs, &seen, id);
+    assert_eq!(last.status, Status::Cancelled, "{last:?}");
+    assert_eq!(
+        last.done, 0,
+        "cancelled before the slow first item finished: {last:?}"
+    );
 }

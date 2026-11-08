@@ -7,6 +7,7 @@ src/                Rust core, shared by both apps
   api.rs            everything the apps can call (UniFFI makes the Kotlin and Swift bindings)
   ytdlp/            yt-dlp through embedded Python (feature `ytdlp`)
   playlists/        save YouTube / YouTube Music playlists into the library (feature `playlists`)
+  jobs/             runs long work in the background and reports exact status to the app
   db.rs             the library database (SQLite)
   phone.rs          what phones need around yt-dlp: unpack Python, link ffmpeg, environment
 android/            Kotlin + Jetpack Compose app (Gradle)
@@ -48,6 +49,19 @@ Phones: both carry their own Python (the official CPython 3.15 builds from pytho
   scripts/ios_rust.sh
   cd ios && xcodegen
   ```
+
+## Jobs module
+
+`jobs` runs long work (playlist saves now; scans, NAS sync, conversions later) and tells the app what is happening:
+
+- **State:** every change updates the job's `JobState` (status, item i of n, bytes, speed, ETA, last error) and bumps its `revision`. The listener gets the whole state of that job and the app just replaces what it shows. One delivery thread calls the listener, so states arrive in order and work never waits for the app. Byte progress is sent at most 4 times a second; everything else at once.
+- **Log:** info, warnings and errors are numbered and never dropped; the app reads new lines with `logs(job, since)`.
+- **End:** every job ends exactly once (Done, Failed or Cancelled); a panicking job fails instead of crashing the app, and a panicking listener gets the state again.
+- At most 2 jobs run at a time; `cancel` stops queued jobs at once and running ones through their cancel hooks.
+
+- **Sudden close:** `Jobs::open(db)` keeps jobs in the library database (migration 0003). The delivery thread saves each change and new log line in one transaction before it tells the app. On the next start, finished jobs come back as history (the newest 200) and unfinished ones as **Interrupted**: the app offers `resume(id)` (runs it again from the start with the same params) or `discard(id)` (ends it as Cancelled). Failed jobs can be resumed too, as a retry.
+
+A feature plugs in with one line, `jobs.register(kind, runner)`, then starts jobs with `jobs.start(kind, title, params)`. Params are text the runner understands (playlists use `playlists::job_params(link, options)` and `playlists::run_job`). A runner must be safe to run again with the same params, because resuming does exactly that; playlists skip saved items and yt-dlp continues partial files.
 
 ## Playlists module
 
