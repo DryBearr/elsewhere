@@ -79,6 +79,7 @@ fn page(path: &str) -> Option<(&'static str, String)> {
         "/broken-playlist.html" => {
             playlist("Broken Playlist", &["/Band%20-%20Hit.mp4", "/missing.mp4"])
         }
+        "/slow-playlist.html" => playlist("Slow Playlist", &["/slow.mp4", "/Band%20-%20Hit.mp4"]),
         path if path.starts_with("/api/search?") => {
             let answer = if path.contains("track_name=Hit&") {
                 r#"[{"trackName":"Hit","artistName":"Band","instrumental":false,"syncedLyrics":"[00:01.00] la la","plainLyrics":"la la"}]"#
@@ -99,7 +100,7 @@ fn page(path: &str) -> Option<(&'static str, String)> {
 /// - `/slow.mp4`: SLOW_SIZE bytes, sent slowly
 /// - `/broken.mp4`: promises SIZE bytes, sends half, then closes
 /// - `/missing.mp4`: 404
-/// - `/playlist.html`, `/broken-playlist.html`, `/api/search?...`: see `page`
+/// - `/playlist.html`, `/broken-playlist.html`, `/slow-playlist.html`, `/api/search?...`: see `page`
 pub fn server() -> &'static str {
     static URL: OnceLock<String> = OnceLock::new();
     URL.get_or_init(|| {

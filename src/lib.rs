@@ -6,6 +6,7 @@ uniffi::setup_scaffolding!();
 
 pub mod api;
 mod db;
+pub mod jobs;
 #[cfg(feature = "ytdlp")]
 mod phone;
 #[cfg(feature = "playlists")]
