@@ -813,3 +813,421 @@ fn moved_paths_are_rebased_only_through_the_media_folder_name() {
         Path::new("/new/Documents/Media/Music")
     );
 }
+
+// --- Step 3: where the person stopped, what they finished, favorites and ratings ----
+
+impl Fixture {
+    /// An entry of `tab` with a real file, `duration_ms` long (None: unknown).
+    fn entry(&self, tab: &str, title: &str, duration_ms: Option<i64>) -> i64 {
+        let folder = self.media.join(tab);
+        fs::create_dir_all(&folder).unwrap();
+        let tab_id: i64 = self
+            .db
+            .query_row("SELECT id FROM category WHERE name = ?1", [tab], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let library: i64 = self
+            .db
+            .query_row(
+                "INSERT INTO library (category_id, root) VALUES (?1, ?2)
+                 ON CONFLICT (root) DO UPDATE SET root = excluded.root RETURNING id",
+                params![tab_id, folder.to_str().unwrap()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let file = format!("{title}.bin");
+        fs::write(folder.join(&file), b"media").unwrap();
+        self.db
+            .query_row(
+                "INSERT INTO item (category_id, library_id, kind, path, title, sort_title, duration_ms)
+                 VALUES (?1, ?2, 'entry', ?3, ?4, lower(?4), ?5) RETURNING id",
+                params![tab_id, library, file, title, duration_ms],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn progress(&self, id: i64) -> Option<Progress> {
+        self.library.item(id).unwrap().summary.progress
+    }
+}
+
+const MINUTE: i64 = 60_000;
+
+#[test]
+fn a_song_always_starts_over_and_counts_each_full_play_once() {
+    let f = fixture("song");
+    let song = f.entry("Music", "Song", Some(3 * MINUTE));
+    assert_eq!(
+        f.library.start_play(song).unwrap(),
+        PlayStart {
+            position_ms: 0,
+            resumed: false
+        }
+    );
+    assert!(
+        f.library
+            .save_progress(song, 90_000, Some(3 * MINUTE))
+            .unwrap()
+    );
+    let half = f.progress(song).unwrap();
+    assert_eq!(
+        (half.position, half.percent, half.done, half.plays),
+        (0, 0.5, false, 0),
+        "songs keep no resume point"
+    );
+    f.library
+        .save_progress(song, 175_000, Some(3 * MINUTE))
+        .unwrap();
+    assert_eq!(
+        (
+            f.progress(song).unwrap().done,
+            f.progress(song).unwrap().plays
+        ),
+        (true, 1)
+    );
+    // Near the end again, back, and to the end once more: still the same play.
+    f.library
+        .save_progress(song, 178_000, Some(3 * MINUTE))
+        .unwrap();
+    f.library
+        .save_progress(song, 60_000, Some(3 * MINUTE))
+        .unwrap();
+    assert!(
+        !f.progress(song).unwrap().done,
+        "playing it again: not done any more"
+    );
+    f.library
+        .save_progress(song, 176_000, Some(3 * MINUTE))
+        .unwrap();
+    assert_eq!(
+        f.progress(song).unwrap().plays,
+        1,
+        "seeking does not count it twice"
+    );
+    // A new play is counted again.
+    assert_eq!(f.library.start_play(song).unwrap().position_ms, 0);
+    f.library
+        .save_progress(song, 3 * MINUTE, Some(3 * MINUTE))
+        .unwrap();
+    assert_eq!(f.progress(song).unwrap().plays, 2);
+}
+
+#[test]
+fn a_movie_resumes_from_30_seconds_until_it_is_done() {
+    let f = fixture("movie");
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    assert_eq!(
+        f.library.start_play(movie).unwrap(),
+        PlayStart {
+            position_ms: 0,
+            resumed: false
+        }
+    );
+    f.library.save_progress(movie, 29_999, None).unwrap();
+    assert_eq!(
+        f.library.start_play(movie).unwrap().position_ms,
+        0,
+        "under 30 s: no resume point"
+    );
+    f.library.save_progress(movie, 30_000, None).unwrap();
+    assert_eq!(
+        f.library.start_play(movie).unwrap(),
+        PlayStart {
+            position_ms: 30_000,
+            resumed: true
+        }
+    );
+    f.library.save_progress(movie, 61 * MINUTE, None).unwrap();
+    let midway = f.progress(movie).unwrap();
+    assert_eq!((midway.position, midway.done), (61 * MINUTE, false));
+    assert!((midway.percent - 0.61).abs() < 1e-9, "{midway:?}");
+    // In the credits (the last 2 minutes): done, counted once, and it starts over next time.
+    f.library.save_progress(movie, 98 * MINUTE, None).unwrap();
+    f.library.save_progress(movie, 99 * MINUTE, None).unwrap();
+    let done = f.progress(movie).unwrap();
+    assert_eq!(
+        (done.position, done.percent, done.done, done.plays),
+        (0, 1.0, true, 1)
+    );
+    assert_eq!(
+        f.library.start_play(movie).unwrap(),
+        PlayStart {
+            position_ms: 0,
+            resumed: false
+        }
+    );
+}
+
+#[test]
+fn clips_start_over_and_long_audio_resumes() {
+    let f = fixture("lengths");
+    let clip = f.entry("Videos", "Clip", Some(5 * MINUTE - 1));
+    let video = f.entry("Videos", "Video", Some(5 * MINUTE));
+    let chapter = f.entry("Music", "Audiobook chapter", Some(40 * MINUTE));
+    for id in [clip, video, chapter] {
+        f.library.start_play(id).unwrap();
+        f.library.save_progress(id, 2 * MINUTE, None).unwrap();
+    }
+    assert_eq!(
+        f.library.start_play(clip).unwrap().position_ms,
+        0,
+        "a clip starts over"
+    );
+    assert_eq!(f.library.start_play(video).unwrap().position_ms, 2 * MINUTE);
+    assert_eq!(
+        f.library.start_play(chapter).unwrap().position_ms,
+        2 * MINUTE,
+        "long audio resumes"
+    );
+}
+
+#[test]
+fn the_player_teaches_the_library_the_real_length() {
+    let f = fixture("length");
+    let unknown = f.entry("Movies", "Unknown", None);
+    // Without any length: the position is kept, but it is never done.
+    f.library.save_progress(unknown, 45 * MINUTE, None).unwrap();
+    let kept = f.progress(unknown).unwrap();
+    assert_eq!(
+        (kept.position, kept.percent, kept.done),
+        (45 * MINUTE, 0.0, false)
+    );
+    assert_eq!(
+        f.library.start_play(unknown).unwrap().position_ms,
+        45 * MINUTE
+    );
+    // The player says how long it is: the library keeps that length from now on.
+    f.library
+        .save_progress(unknown, 45 * MINUTE, Some(90 * MINUTE))
+        .unwrap();
+    assert_eq!(
+        f.library.item(unknown).unwrap().summary.duration_ms,
+        Some(90 * MINUTE)
+    );
+    assert!((f.progress(unknown).unwrap().percent - 0.5).abs() < 1e-9);
+    // Within a second of what is stored: left alone. More off: corrected.
+    f.library
+        .save_progress(unknown, MINUTE, Some(90 * MINUTE + 900))
+        .unwrap();
+    assert_eq!(
+        f.library.item(unknown).unwrap().summary.duration_ms,
+        Some(90 * MINUTE)
+    );
+    f.library
+        .save_progress(unknown, MINUTE, Some(91 * MINUTE))
+        .unwrap();
+    assert_eq!(
+        f.library.item(unknown).unwrap().summary.duration_ms,
+        Some(91 * MINUTE)
+    );
+    // Nonsense lengths are ignored.
+    f.library.save_progress(unknown, MINUTE, Some(-1)).unwrap();
+    f.library.save_progress(unknown, MINUTE, Some(0)).unwrap();
+    assert_eq!(
+        f.library.item(unknown).unwrap().summary.duration_ms,
+        Some(91 * MINUTE)
+    );
+}
+
+#[test]
+fn positions_outside_the_item_are_brought_inside() {
+    let f = fixture("clamp");
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    f.library.save_progress(movie, -5_000, None).unwrap();
+    let start = f.progress(movie).unwrap();
+    assert_eq!((start.position, start.percent, start.done), (0, 0.0, false));
+    f.library.save_progress(movie, 500 * MINUTE, None).unwrap();
+    let past = f.progress(movie).unwrap();
+    assert_eq!(
+        (past.position, past.percent, past.done, past.plays),
+        (0, 1.0, true, 1),
+        "past the end is the end"
+    );
+    f.library
+        .save_progress(movie, i64::MAX, Some(i64::MAX))
+        .unwrap();
+    assert!(f.progress(movie).unwrap().done);
+}
+
+#[test]
+fn what_cannot_be_played_or_is_gone_says_so() {
+    let f = fixture("refusals");
+    let book = f.entry("Books", "Book", None);
+    let album: i64 = f
+        .db
+        .query_row(
+            "INSERT INTO item (category_id, kind, title, sort_title) VALUES (?1, 'group', 'Album', 'album') RETURNING id",
+            [f.music_tab],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for id in [book, album] {
+        assert_eq!(kind_of(f.library.start_play(id)), ProblemKind::Input);
+        assert_eq!(
+            kind_of(f.library.save_progress(id, MINUTE, None)),
+            ProblemKind::Input
+        );
+    }
+    assert_eq!(
+        kind_of(f.library.set_watched(album, true)),
+        ProblemKind::Input
+    );
+    // Gone: a save does nothing (the player may still be saving), the rest says so.
+    assert!(!f.library.save_progress(9999, MINUTE, None).unwrap());
+    assert_eq!(
+        kind_of(f.library.start_play(9999)),
+        ProblemKind::Unavailable
+    );
+    assert_eq!(
+        kind_of(f.library.set_watched(9999, true)),
+        ProblemKind::Unavailable
+    );
+    assert_eq!(
+        kind_of(f.library.set_favorite(9999, true)),
+        ProblemKind::Unavailable
+    );
+    assert_eq!(
+        kind_of(f.library.set_rating(9999, Some(5))),
+        ProblemKind::Unavailable
+    );
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    f.library.start_play(movie).unwrap();
+    f.db.execute("DELETE FROM item WHERE id = ?1", [movie])
+        .unwrap();
+    assert!(
+        !f.library.save_progress(movie, 10 * MINUTE, None).unwrap(),
+        "deleted while playing"
+    );
+}
+
+#[test]
+fn watched_favorite_and_rating_marks() {
+    let f = fixture("marks");
+    let episode = f.entry("TV Shows", "Episode", Some(45 * MINUTE));
+    f.library.save_progress(episode, 20 * MINUTE, None).unwrap();
+    f.library.set_watched(episode, true).unwrap();
+    let watched = f.progress(episode).unwrap();
+    assert_eq!(
+        (
+            watched.position,
+            watched.percent,
+            watched.done,
+            watched.plays
+        ),
+        (0, 1.0, true, 0),
+        "marking adds no play"
+    );
+    f.library.set_watched(episode, false).unwrap();
+    let fresh = f.progress(episode).unwrap();
+    assert_eq!((fresh.position, fresh.percent, fresh.done), (0, 0.0, false));
+    let never = f.entry("Movies", "Never played", Some(MINUTE * 100));
+    f.library.set_watched(never, true).unwrap();
+    assert!(
+        f.progress(never).unwrap().done,
+        "works without any progress yet"
+    );
+
+    let album: i64 = f
+        .db
+        .query_row(
+            "INSERT INTO item (category_id, kind, title, sort_title) VALUES (?1, 'group', 'Album', 'album') RETURNING id",
+            [f.music_tab],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for id in [episode, album] {
+        f.library.set_favorite(id, true).unwrap();
+        assert!(f.library.item(id).unwrap().summary.favorite);
+        f.library.set_favorite(id, false).unwrap();
+        assert!(!f.library.item(id).unwrap().summary.favorite);
+    }
+    f.library.set_rating(episode, Some(1)).unwrap();
+    f.library.set_rating(episode, Some(10)).unwrap();
+    assert_eq!(f.library.item(episode).unwrap().summary.rating, Some(10));
+    for bad in [0, 11, -1, i64::MAX] {
+        assert_eq!(
+            kind_of(f.library.set_rating(episode, Some(bad))),
+            ProblemKind::Input,
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        f.library.item(episode).unwrap().summary.rating,
+        Some(10),
+        "a bad rating changes nothing"
+    );
+    f.library.set_rating(episode, None).unwrap();
+    assert_eq!(f.library.item(episode).unwrap().summary.rating, None);
+}
+
+#[test]
+fn progress_is_the_items_wherever_it_is_listed() {
+    let f = fixture("everywhere");
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    let one = f.playlist("One", &[movie]);
+    let two = f.playlist("Two", &[movie, movie]);
+    f.library.save_progress(movie, 40 * MINUTE, None).unwrap();
+    for list in [one, two] {
+        for row in f.library.collection_items(list, None, 10).unwrap().rows {
+            assert_eq!(row.item.progress.as_ref().unwrap().position, 40 * MINUTE);
+        }
+    }
+}
+
+#[test]
+fn saves_from_many_threads_count_one_play_once() {
+    let f = fixture("threads-marks");
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    let library = Arc::new(Library::open(&f.dir.join("library.db"), &f.media).unwrap());
+    library.start_play(movie).unwrap();
+    let savers: Vec<_> = (0..8)
+        .map(|n| {
+            let library = Arc::clone(&library);
+            thread::spawn(move || {
+                for step in 0..50 {
+                    // Half the saves land in the credits.
+                    let position = if (n + step) % 2 == 0 {
+                        99 * MINUTE
+                    } else {
+                        50 * MINUTE
+                    };
+                    assert!(
+                        library
+                            .save_progress(movie, position, Some(100 * MINUTE))
+                            .unwrap()
+                    );
+                    library.item(movie).unwrap();
+                }
+            })
+        })
+        .collect();
+    for saver in savers {
+        saver.join().unwrap();
+    }
+    assert_eq!(
+        library.item(movie).unwrap().summary.progress.unwrap().plays,
+        1
+    );
+}
+
+#[test]
+fn a_save_that_hit_a_broken_connection_is_saved_and_counted_once() {
+    let f = fixture("retry-marks");
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    f.library.start_play(movie).unwrap();
+    f.library.fail_next.store(1, Ordering::SeqCst);
+    assert!(f.library.save_progress(movie, 99 * MINUTE, None).unwrap());
+    let progress = f.progress(movie).unwrap();
+    assert_eq!((progress.done, progress.plays), (true, 1));
+    f.library.fail_next.store(2, Ordering::SeqCst);
+    assert!(
+        f.library.set_favorite(movie, true).is_err(),
+        "two failures in a row: an error"
+    );
+    assert!(
+        !f.library.item(movie).unwrap().summary.favorite,
+        "and nothing half-saved"
+    );
+}
