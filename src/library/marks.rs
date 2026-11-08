@@ -21,6 +21,9 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use super::{ItemKind, Library, Media, media_from, no_such, refused};
 use crate::problem::Problem;
 
+/// Plays remembered for counting (one small entry per item played since the app started).
+const COUNTED_KEPT: usize = 10_000;
+
 /// The thresholds of the resume rules.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rules {
@@ -167,7 +170,17 @@ impl Library {
             Some(media @ (Media::Audio | Media::Video)) => media,
             _ => return Err(not_playable(id)),
         };
-        self.counted().insert(id, false);
+        let mut counted = self.counted();
+        // Bounded: plays already counted can be forgotten first; past the bound, all of
+        // them (at worst one play is counted twice).
+        if counted.len() >= COUNTED_KEPT {
+            counted.retain(|_, done| !*done);
+            if counted.len() >= COUNTED_KEPT {
+                counted.clear();
+            }
+        }
+        counted.insert(id, false);
+        drop(counted);
         let resumable = rules.resumes(media, duration)
             && !done
             && position >= rules.min_resume_ms

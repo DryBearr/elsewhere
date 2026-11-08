@@ -1231,3 +1231,232 @@ fn a_save_that_hit_a_broken_connection_is_saved_and_counted_once() {
         "and nothing half-saved"
     );
 }
+
+// --- Step 3, edge cases from a full review ----------------------------------------------
+
+#[test]
+fn a_resume_point_past_a_shorter_file_starts_over() {
+    // The file was replaced by a shorter one: the old resume point lies past its end.
+    let f = fixture("shorter");
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    f.library.save_progress(movie, 80 * MINUTE, None).unwrap();
+    f.db.execute(
+        "UPDATE item SET duration_ms = ?2 WHERE id = ?1",
+        params![movie, 60 * MINUTE],
+    )
+    .unwrap();
+    assert_eq!(
+        f.library.start_play(movie).unwrap(),
+        PlayStart {
+            position_ms: 0,
+            resumed: false
+        }
+    );
+}
+
+#[test]
+fn audio_of_unknown_length_starts_over_like_a_song() {
+    let f = fixture("unknown-audio");
+    let track = f.entry("Music", "Track", None);
+    f.library.save_progress(track, 25 * MINUTE, None).unwrap();
+    let saved = f.progress(track).unwrap();
+    assert_eq!(
+        (saved.position, saved.done),
+        (0, false),
+        "no resume point without a length"
+    );
+    assert_eq!(f.library.start_play(track).unwrap().position_ms, 0);
+}
+
+#[test]
+fn a_play_without_start_play_counts_once_until_the_next_start() {
+    let f = fixture("no-start");
+    let song = f.entry("Music", "Song", Some(3 * MINUTE));
+    f.library.save_progress(song, 3 * MINUTE, None).unwrap();
+    f.library.save_progress(song, MINUTE, None).unwrap();
+    f.library.save_progress(song, 3 * MINUTE, None).unwrap();
+    assert_eq!(
+        f.progress(song).unwrap().plays,
+        1,
+        "the same play, never started"
+    );
+    f.library.start_play(song).unwrap();
+    f.library.save_progress(song, 3 * MINUTE, None).unwrap();
+    assert_eq!(f.progress(song).unwrap().plays, 2);
+}
+
+#[test]
+fn going_back_after_the_credits_keeps_the_new_spot() {
+    let f = fixture("back-from-credits");
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    f.library.start_play(movie).unwrap();
+    f.library.save_progress(movie, 99 * MINUTE, None).unwrap();
+    // Back to a favourite scene, then paused there.
+    f.library.save_progress(movie, 50 * MINUTE, None).unwrap();
+    let back = f.progress(movie).unwrap();
+    assert_eq!(
+        (back.position, back.done, back.plays),
+        (50 * MINUTE, false, 1)
+    );
+    assert_eq!(
+        f.library.start_play(movie).unwrap().position_ms,
+        50 * MINUTE
+    );
+    f.library.set_watched(movie, false).unwrap();
+    assert_eq!(
+        f.library.start_play(movie).unwrap().position_ms,
+        0,
+        "not watched: from the top"
+    );
+}
+
+#[test]
+fn saves_wait_for_another_writer_instead_of_failing() {
+    let f = fixture("busy");
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    let path = f.dir.join("library.db");
+    let (locked, is_locked) = std::sync::mpsc::channel();
+    // Another connection (a playlist save, say) holds the write lock for 0.8 s.
+    let writer = thread::spawn(move || {
+        let mut db = crate::db::open(&path).unwrap();
+        let tx = db
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        tx.execute("UPDATE item SET title = title", []).unwrap();
+        locked.send(()).unwrap();
+        thread::sleep(std::time::Duration::from_millis(800));
+        tx.commit().unwrap();
+    });
+    is_locked.recv().unwrap();
+    let started = std::time::Instant::now();
+    assert!(
+        f.library.save_progress(movie, 40 * MINUTE, None).unwrap(),
+        "waited, then saved"
+    );
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(500),
+        "it did wait for the lock"
+    );
+    writer.join().unwrap();
+    assert_eq!(f.progress(movie).unwrap().position, 40 * MINUTE);
+}
+
+#[test]
+fn every_save_moves_the_item_up_in_recently_played() {
+    let f = fixture("recent");
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    f.library.save_progress(movie, MINUTE, None).unwrap();
+    f.db.execute(
+        "UPDATE progress SET opened_at = 0 WHERE item_id = ?1",
+        [movie],
+    )
+    .unwrap();
+    f.library.save_progress(movie, 2 * MINUTE, None).unwrap();
+    let opened: i64 =
+        f.db.query_row(
+            "SELECT opened_at FROM progress WHERE item_id = ?1",
+            [movie],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(opened > 1_700_000_000, "{opened}");
+}
+
+#[test]
+fn many_items_played_from_many_threads_each_count_their_own_plays() {
+    let f = fixture("many-items");
+    let items: Vec<i64> = (0..4)
+        .map(|n| f.entry("Movies", &format!("Movie {n}"), Some(100 * MINUTE)))
+        .collect();
+    let library = Arc::new(Library::open(&f.dir.join("library.db"), &f.media).unwrap());
+    let players: Vec<_> = items
+        .iter()
+        .map(|&item| {
+            let library = Arc::clone(&library);
+            thread::spawn(move || {
+                for _ in 0..5 {
+                    library.start_play(item).unwrap();
+                    library.save_progress(item, 30 * MINUTE, None).unwrap();
+                    library.save_progress(item, 99 * MINUTE, None).unwrap();
+                    library.save_progress(item, 99 * MINUTE + 1, None).unwrap();
+                }
+            })
+        })
+        .collect();
+    for player in players {
+        player.join().unwrap();
+    }
+    for item in items {
+        assert_eq!(
+            library.item(item).unwrap().summary.progress.unwrap().plays,
+            5,
+            "item {item}"
+        );
+    }
+}
+
+#[test]
+fn remembered_plays_stay_bounded() {
+    let f = fixture("bounded");
+    let movie = f.entry("Movies", "Movie", Some(100 * MINUTE));
+    {
+        let mut counted = f.library.counted.lock().unwrap();
+        for id in 0..10_000 {
+            counted.insert(-1 - id, id % 2 == 0);
+        }
+    }
+    f.library.start_play(movie).unwrap();
+    let size = f.library.counted.lock().unwrap().len();
+    assert!(size <= 5_001, "counted plays are forgotten first: {size}");
+    {
+        let mut counted = f.library.counted.lock().unwrap();
+        for id in 0..10_000 {
+            counted.insert(-20_000 - id, false);
+        }
+    }
+    f.library.start_play(movie).unwrap();
+    assert_eq!(
+        f.library.counted.lock().unwrap().len(),
+        1,
+        "past the bound: only the new play"
+    );
+    // And counting still works.
+    f.library.save_progress(movie, 99 * MINUTE, None).unwrap();
+    assert_eq!(f.progress(movie).unwrap().plays, 1);
+}
+
+#[test]
+fn ratings_and_favorites_for_albums_and_shows() {
+    let f = fixture("group-marks");
+    let show: i64 = f
+        .db
+        .query_row(
+            "INSERT INTO item (category_id, kind, title, sort_title) VALUES (?1, 'group', 'Show', 'show') RETURNING id",
+            [f.music_tab],
+            |row| row.get(0),
+        )
+        .unwrap();
+    f.library.set_rating(show, Some(7)).unwrap();
+    f.library.set_favorite(show, true).unwrap();
+    let summary = f.library.item(show).unwrap().summary;
+    assert_eq!((summary.rating, summary.favorite), (Some(7), true));
+}
+
+#[test]
+fn stored_lengths_of_zero_or_less_count_as_unknown() {
+    let f = fixture("bad-lengths");
+    let movie = f.entry("Movies", "Movie", Some(0));
+    f.library.save_progress(movie, 45 * MINUTE, None).unwrap();
+    let saved = f.progress(movie).unwrap();
+    assert_eq!(
+        (saved.position, saved.done),
+        (45 * MINUTE, false),
+        "unknown length: kept, never done"
+    );
+    f.db.execute("UPDATE item SET duration_ms = -10 WHERE id = ?1", [movie])
+        .unwrap();
+    assert_eq!(
+        f.library.start_play(movie).unwrap().position_ms,
+        45 * MINUTE
+    );
+}
