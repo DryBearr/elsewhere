@@ -114,9 +114,11 @@ CROSS
   # mpv asks for the macOS SDK on any Apple system; these make it use the iOS one.
   export MACOS_SDK=$sysroot MACOS_SDK_VERSION
   MACOS_SDK_VERSION=$(xcrun --sdk "$sdk" --show-sdk-version)
-  # Only mpv_* is exported: the libraries inside stay hidden.
+  # Only mpv_* is exported: the libraries inside stay hidden. mpv has Objective-C files,
+  # so the Objective-C linker links it.
   meson_build mpv -Ddefault_library=shared "${MPV_COMMON[@]}" -Daudiounit=enabled -Dgl=disabled \
-    "-Dc_link_args=[$flags, '-Wl,-exported_symbol,_mpv_*', '-Wl,-dead_strip']"
+    "-Dc_link_args=[$flags, '-Wl,-exported_symbol,_mpv_*', '-Wl,-dead_strip']" \
+    "-Dobjc_link_args=[$flags, '-Wl,-exported_symbol,_mpv_*', '-Wl,-dead_strip']"
   unset MACOS_SDK MACOS_SDK_VERSION
   grep -q "enabled features:.* gpl " "$out/mpv.log" && { echo "mpv was configured as GPL" >&2; exit 1; }
 
