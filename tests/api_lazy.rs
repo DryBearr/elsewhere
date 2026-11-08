@@ -33,6 +33,9 @@ fn wait_until_finished(id: i64) -> api::JobState {
 fn start_is_cheap_and_python_starts_on_first_use() {
     // Before start: everything says NotReady, nothing panics.
     assert!(!api::core_status().started);
+    // A playlist player before start: not ready (it needs the library), no crash.
+    #[cfg(feature = "player")]
+    assert_eq!(kind_of(&api::CoreQueue::new()), Some(ProblemKind::Setup));
     let not_ready = |result: Result<(), ApiError>| {
         assert!(kind_of(&result) == Some(ProblemKind::Setup), "{result:?}")
     };

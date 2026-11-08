@@ -17,6 +17,8 @@ mod library;
 mod player;
 #[cfg(feature = "playlists")]
 mod playlists;
+#[cfg(feature = "player")]
+mod queue;
 #[cfg(feature = "ytdlp")]
 mod ytdlp;
 
@@ -32,6 +34,8 @@ pub use self::library::*;
 pub use self::player::*;
 #[cfg(feature = "playlists")]
 pub use self::playlists::*;
+#[cfg(feature = "player")]
+pub use self::queue::*;
 #[cfg(feature = "ytdlp")]
 pub use self::ytdlp::*;
 
