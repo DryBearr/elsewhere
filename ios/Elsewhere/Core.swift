@@ -32,4 +32,11 @@ enum Core {
             print("Elsewhere: the core did not start: \(startError!)")
         }
     }
+
+    /// True once the core has a broken part it could not heal: only a fresh start helps.
+    /// iOS apps cannot restart themselves, so the app has to ask the person to reopen it.
+    /// Nothing is lost: jobs that were running come back Interrupted, with Resume.
+    static var needsRestart: Bool {
+        coreHealth().needsRestart
+    }
 }

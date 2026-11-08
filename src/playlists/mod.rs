@@ -17,7 +17,6 @@
 
 mod lyrics;
 
-use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -26,6 +25,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
 use crate::jobs::{Job, Level};
+use crate::problem::{self, Kind, Problem};
 use crate::ytdlp::{self, Cancel, Event};
 
 /// What to save each item as.
@@ -80,7 +80,7 @@ pub struct SavedItem {
 pub struct Failed {
     pub position: usize,
     pub title: String,
-    pub error: String,
+    pub problem: Problem,
 }
 
 /// Reported while `save` works.
@@ -118,45 +118,40 @@ pub enum Progress {
     },
     Failed {
         position: usize,
-        error: String,
+        problem: Problem,
     },
+    /// A step failed in a way that can heal (the connection); it runs again after a pause.
+    /// `position` is None while reading the link.
+    Retrying {
+        position: Option<usize>,
+        attempt: usize,
+        of: usize,
+        problem: Problem,
+    },
+    /// Still working, nothing to show (yt-dlp's own chatter): keeps the watchdog calm.
+    Working,
 }
 
-#[derive(Debug)]
-pub enum Error {
-    YtDlp(ytdlp::Error),
-    Database(String),
-    Files(String),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Error::YtDlp(err) => err.fmt(f),
-            Error::Database(message) => write!(f, "database: {message}"),
-            Error::Files(message) => write!(f, "files: {message}"),
-        }
+/// What a yt-dlp failure means here. A stop that nobody asked for came from the watchdog
+/// (no progress for too long): that is a connection that hangs, and the step runs again.
+fn ytdlp_problem(err: &ytdlp::Error, cancel: &Cancel) -> Problem {
+    if matches!(err, ytdlp::Error::Cancelled) && cancel.take_interrupted() && !cancel.is_cancelled()
+    {
+        return Problem::new(
+            Kind::Network,
+            "No progress for a long time; trying again.",
+            "interrupted by the watchdog",
+        );
     }
+    problem::from_ytdlp(err)
 }
 
-impl std::error::Error for Error {}
-
-impl From<ytdlp::Error> for Error {
-    fn from(err: ytdlp::Error) -> Self {
-        Error::YtDlp(err)
-    }
+fn db_problem(err: rusqlite::Error) -> Problem {
+    problem::from_sqlite(&err, "saving to the library")
 }
 
-impl From<rusqlite::Error> for Error {
-    fn from(err: rusqlite::Error) -> Self {
-        Error::Database(err.to_string())
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Error::Files(err.to_string())
-    }
+fn files_problem(err: std::io::Error) -> Problem {
+    problem::from_io(&err, "saving files")
 }
 
 /// Saves everything behind `url` under `media` (an absolute folder) and records it in the
@@ -168,12 +163,28 @@ pub fn save<F>(
     options: &Options,
     on_progress: F,
     cancel: &Cancel,
-) -> Result<Saved, Error>
+) -> Result<Saved, Problem>
 where
     F: Fn(Progress) + Send + Sync + 'static,
 {
     let on_progress = Arc::new(on_progress);
-    let listing = list(url, options.limit, cancel)?;
+    let retrying = |position: Option<usize>| {
+        let progress = Arc::clone(&on_progress);
+        move |attempt, of, problem: &Problem| {
+            progress(Progress::Retrying {
+                position,
+                attempt,
+                of,
+                problem: problem.clone(),
+            })
+        }
+    };
+    let alive = Arc::clone(&on_progress);
+    let listing = problem::with_retries(
+        || list(url, options.limit, cancel, &alive),
+        retrying(None),
+        || cancel.is_cancelled(),
+    )?;
     on_progress(Progress::Listed {
         title: listing.title.clone(),
         total: listing.entries.len(),
@@ -185,25 +196,29 @@ where
     };
     let root = media.join(category);
     let folder = root.join(folder_name(&listing.title, &listing.id));
-    fs::create_dir_all(&folder)?;
+    fs::create_dir_all(&folder).map_err(files_problem)?;
     let cover = if listing.is_playlist {
         save_cover(url, &folder, cancel)
     } else {
         None
     };
 
-    let mut db = crate::db::open(db)?;
-    let category_id: i64 = db.query_row(
-        "SELECT id FROM category WHERE name = ?1",
-        [category],
-        |row| row.get(0),
-    )?;
-    let library_id: i64 = db.query_row(
-        "INSERT INTO library (category_id, root) VALUES (?1, ?2)
-         ON CONFLICT (root) DO UPDATE SET root = excluded.root RETURNING id",
-        params![category_id, text_path(&root)],
-        |row| row.get(0),
-    )?;
+    let mut db = crate::db::open(db).map_err(db_problem)?;
+    let category_id: i64 = db
+        .query_row(
+            "SELECT id FROM category WHERE name = ?1",
+            [category],
+            |row| row.get(0),
+        )
+        .map_err(db_problem)?;
+    let library_id: i64 = db
+        .query_row(
+            "INSERT INTO library (category_id, root) VALUES (?1, ?2)
+             ON CONFLICT (root) DO UPDATE SET root = excluded.root RETURNING id",
+            params![category_id, text_path(&root)],
+            |row| row.get(0),
+        )
+        .map_err(db_problem)?;
 
     let format_args = format_args(options.format, has_program("ffmpeg"));
     let format_args: Vec<&str> = format_args.iter().map(String::as_str).collect();
@@ -212,9 +227,11 @@ where
     for (index, entry) in listing.entries.iter().enumerate() {
         let position = index + 1;
         if cancel.is_cancelled() {
-            return Err(Error::YtDlp(ytdlp::Error::Cancelled));
+            return Err(Problem::cancelled());
         }
-        if let Some(item) = saved_before(&db, library_id, &root, &entry.source_id, position)? {
+        if let Some(item) =
+            saved_before(&db, library_id, &root, &entry.source_id, position).map_err(db_problem)?
+        {
             on_progress(Progress::Skipped { position });
             items.push(item);
             continue;
@@ -223,41 +240,20 @@ where
             position,
             title: entry.title.clone(),
         });
-        let progress = Arc::clone(&on_progress);
-        let downloaded = download(
-            entry,
-            position,
-            &folder,
-            &format_args,
-            cancel,
-            move |event| match event {
-                Event::Progress {
-                    done,
-                    total,
-                    speed,
-                    eta,
-                    ..
-                } => progress(Progress::Downloading {
+        let downloaded = problem::with_retries(
+            || {
+                let progress = Arc::clone(&on_progress);
+                download(
+                    entry,
                     position,
-                    done,
-                    total,
-                    speed,
-                    eta,
-                }),
-                Event::Log { level, message } => {
-                    let level = match level {
-                        ytdlp::Level::Warning => Level::Warning,
-                        ytdlp::Level::Error => Level::Error,
-                        ytdlp::Level::Debug | ytdlp::Level::Info => return,
-                    };
-                    progress(Progress::Log {
-                        position,
-                        level,
-                        message,
-                    })
-                }
-                _ => {}
+                    &folder,
+                    &format_args,
+                    cancel,
+                    move |event| item_event(&*progress, position, event),
+                )
             },
+            retrying(Some(position)),
+            || cancel.is_cancelled(),
         );
         match downloaded.and_then(|item| {
             record(
@@ -275,32 +271,26 @@ where
                 on_progress(Progress::Done { position });
                 items.push(item);
             }
-            Err(Error::YtDlp(ytdlp::Error::Cancelled)) => {
-                return Err(Error::YtDlp(ytdlp::Error::Cancelled));
-            }
-            Err(err) => {
-                let error = err.to_string();
+            Err(problem) if problem.is_cancelled() => return Err(problem),
+            Err(problem) => {
                 on_progress(Progress::Failed {
                     position,
-                    error: error.clone(),
+                    problem: problem.clone(),
                 });
                 failed.push(Failed {
                     position,
                     title: entry.title.clone(),
-                    error,
+                    problem,
                 });
             }
         }
     }
 
     let collection_id = if listing.is_playlist {
-        Some(record_collection(
-            &mut db,
-            category_id,
-            &listing,
-            cover.as_deref(),
-            &items,
-        )?)
+        Some(
+            record_collection(&mut db, category_id, &listing, cover.as_deref(), &items)
+                .map_err(db_problem)?,
+        )
     } else {
         None
     };
@@ -312,6 +302,38 @@ where
         items,
         failed,
     })
+}
+
+/// One yt-dlp event while an item downloads, as progress.
+fn item_event(progress: &dyn Fn(Progress), position: usize, event: Event) {
+    match event {
+        Event::Progress {
+            done,
+            total,
+            speed,
+            eta,
+            ..
+        } => progress(Progress::Downloading {
+            position,
+            done,
+            total,
+            speed,
+            eta,
+        }),
+        Event::Log {
+            level: level @ (ytdlp::Level::Warning | ytdlp::Level::Error),
+            message,
+        } => progress(Progress::Log {
+            position,
+            level: if level == ytdlp::Level::Warning {
+                Level::Warning
+            } else {
+                Level::Error
+            },
+            message,
+        }),
+        _ => progress(Progress::Working),
+    }
 }
 
 /// The params of a playlist job: its link and options, as JSON. Kept with the job, so
@@ -339,16 +361,17 @@ pub fn job_params(link: &str, options: &Options) -> String {
 /// jobs.register("playlist", move |job, params| playlists::run_job(job, &db, &media, params));
 /// let id = jobs.start("playlist", &link, &playlists::job_params(&link, &options))?;
 /// ```
-pub fn run_job(job: &Job, db: &Path, media: &Path, params: &str) -> Result<(), String> {
-    let value: Value =
-        serde_json::from_str(params).map_err(|err| format!("bad playlist job params: {err}"))?;
-    let link = text(&value, &["link"]).ok_or("the playlist job has no link")?;
+pub fn run_job(job: &Job, db: &Path, media: &Path, params: &str) -> Result<(), Problem> {
+    let value: Value = serde_json::from_str(params)
+        .map_err(|err| Problem::bug(format!("bad playlist job params: {err}")))?;
+    let link =
+        text(&value, &["link"]).ok_or_else(|| Problem::bug("the playlist job has no link"))?;
     let format = match value["format"].as_str() {
         Some("audio") => Format::Audio,
         Some("video") => Format::Video {
             max_height: value["max_height"].as_u64().map(|height| height as u32),
         },
-        other => return Err(format!("unknown playlist format {other:?}")),
+        other => return Err(Problem::bug(format!("unknown playlist format {other:?}"))),
     };
     let options = Options {
         format,
@@ -360,18 +383,21 @@ pub fn run_job(job: &Job, db: &Path, media: &Path, params: &str) -> Result<(), S
 
 /// Runs `save` as a job (see `jobs`): the job's state follows the playlist item by item,
 /// yt-dlp's warnings and errors go to the job's log, and cancelling the job stops the
-/// download. Failed items are reported but do not fail the job.
-///
+/// download. Failed items are reported but do not fail the job. Connection trouble is
+/// tried again by itself (3 more times, after 2, 10 and 30 s), also when the watchdog
+/// finds a download that hangs.
 pub fn run(
     job: &Job,
     db: &Path,
     media: &Path,
     link: &str,
     options: &Options,
-) -> Result<(), String> {
+) -> Result<(), Problem> {
     let cancel = Cancel::new();
     let stop = cancel.clone();
     job.on_cancel(move || stop.cancel());
+    let interrupt = cancel.clone();
+    job.on_interrupt(move || interrupt.interrupt());
     let reporter = job.clone();
     let saved = save(
         db,
@@ -393,8 +419,8 @@ pub fn run(
             Ok(())
         }
         // The job ends as Cancelled; nothing more to say.
-        Err(Error::YtDlp(ytdlp::Error::Cancelled)) => Ok(()),
-        Err(err) => Err(err.to_string()),
+        Err(problem) if problem.is_cancelled() => Ok(()),
+        Err(problem) => Err(problem),
     }
 }
 
@@ -414,7 +440,23 @@ fn report(job: &Job, progress: Progress) {
             ..
         } => job.progress(done, total, speed, eta),
         Progress::Done { .. } | Progress::Skipped { .. } => job.item_done(),
-        Progress::Failed { position, error } => job.item_failed(&format!("#{position}: {error}")),
+        Progress::Failed { position, problem } => job.item_failed(&Problem {
+            text: format!("#{position}: {}", problem.text),
+            ..problem
+        }),
+        Progress::Retrying {
+            position,
+            attempt,
+            of,
+            problem,
+        } => {
+            let place = position.map_or(String::new(), |position| format!("#{position}: "));
+            job.log(
+                Level::Warning,
+                &format!("{place}{} (try {attempt} of {of})", problem.text),
+            );
+        }
+        Progress::Working => job.keep_alive(),
         Progress::Log {
             position,
             level,
@@ -440,15 +482,22 @@ struct Entry {
     url: String,
 }
 
-fn list(url: &str, limit: Option<usize>, cancel: &Cancel) -> Result<Listing, Error> {
+fn list(
+    url: &str,
+    limit: Option<usize>,
+    cancel: &Cancel,
+    progress: &Arc<impl Fn(Progress) + Send + Sync + 'static + ?Sized>,
+) -> Result<Listing, Problem> {
     let end = limit.map(|limit| limit.max(1).to_string());
     let mut args = vec!["--flat-playlist", "--yes-playlist"];
     if let Some(end) = &end {
         args.extend(["--playlist-end", end]);
     }
-    let json = ytdlp::info(url, &args, |_| {}, cancel)?;
+    let alive = Arc::clone(progress);
+    let json = ytdlp::info(url, &args, move |_| alive(Progress::Working), cancel)
+        .map_err(|err| ytdlp_problem(&err, cancel))?;
     let info: Value = serde_json::from_str(&json)
-        .map_err(|err| Error::Files(format!("yt-dlp's answer is not JSON: {err}")))?;
+        .map_err(|err| Problem::bug(format!("yt-dlp's answer is not JSON: {err}")))?;
     let id = text(&info, &["id"]).unwrap_or_default();
     let title = text(&info, &["title", "id"]).unwrap_or_else(|| "Untitled".to_owned());
     let extractor = text(&info, &["extractor_key", "ie_key"]).unwrap_or_else(|| "url".to_owned());
@@ -542,7 +591,7 @@ fn download(
     format_args: &[&str],
     cancel: &Cancel,
     on_event: impl Fn(Event) + Send + Sync + 'static,
-) -> Result<Downloaded, Error> {
+) -> Result<Downloaded, Problem> {
     // yt-dlp fills in the title and id and makes the name safe for the file system.
     let name = format!("{position:03} - %(title).100B [%(id)s]");
     let media = format!("{name}.%(ext)s");
@@ -560,12 +609,13 @@ fn download(
     ];
     args.extend_from_slice(format_args);
 
-    let done = ytdlp::download(&entry.url, &args, on_event, cancel)?;
+    let done = ytdlp::download(&entry.url, &args, on_event, cancel)
+        .map_err(|err| ytdlp_problem(&err, cancel))?;
     let file = done
         .files
         .into_iter()
         .next()
-        .ok_or_else(|| Error::Files("yt-dlp saved no file".to_owned()))?;
+        .ok_or_else(|| Problem::bug("yt-dlp saved no file"))?;
     let info = done
         .json
         .and_then(|json| serde_json::from_str(&json).ok())
@@ -584,7 +634,7 @@ fn record(
     position: usize,
     downloaded: Downloaded,
     options: &Options,
-) -> Result<SavedItem, Error> {
+) -> Result<SavedItem, Problem> {
     let info = &downloaded.info;
     let file = downloaded.file;
     let meta = Meta::read(info, entry);
@@ -597,8 +647,9 @@ fn record(
 
     let relative = file
         .strip_prefix(root)
-        .map_err(|_| Error::Files(format!("{} is outside {}", file.display(), root.display())))?;
-    let mtime = fs::metadata(&file)?
+        .map_err(|_| Problem::bug(format!("{} is outside {}", file.display(), root.display())))?;
+    let mtime = fs::metadata(&file)
+        .map_err(files_problem)?
         .modified()
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
@@ -612,6 +663,41 @@ fn record(
         "lyrics": lyrics.as_deref().map(text_path),
     });
 
+    let item_id = insert_item(
+        db,
+        category_id,
+        library_id,
+        relative,
+        mtime,
+        &meta,
+        image.as_deref(),
+        &extra,
+    )
+    .map_err(db_problem)?;
+
+    Ok(SavedItem {
+        item_id,
+        position,
+        title: meta.title,
+        artist: meta.artist,
+        file,
+        image,
+        lyrics,
+    })
+}
+
+/// Writes one item and its artists, all or nothing.
+#[allow(clippy::too_many_arguments)]
+fn insert_item(
+    db: &mut Connection,
+    category_id: i64,
+    library_id: i64,
+    relative: &Path,
+    mtime: Option<i64>,
+    meta: &Meta,
+    image: Option<&Path>,
+    extra: &Value,
+) -> rusqlite::Result<i64> {
     let tx = db.transaction()?;
     let item_id: i64 = tx.query_row(
         "INSERT INTO item (category_id, library_id, kind, path, mtime, title, sort_title,
@@ -631,7 +717,7 @@ fn record(
             sort_title(&meta.title),
             meta.year,
             meta.description,
-            image.as_deref().map(text_path),
+            image.map(text_path),
             meta.duration_ms,
             extra.to_string(),
         ],
@@ -650,16 +736,7 @@ fn record(
         )?;
     }
     tx.commit()?;
-
-    Ok(SavedItem {
-        item_id,
-        position,
-        title: meta.title,
-        artist: meta.artist,
-        file,
-        image,
-        lyrics,
-    })
+    Ok(item_id)
 }
 
 /// An item saved on an earlier run whose file is still there.
@@ -669,7 +746,7 @@ fn saved_before(
     root: &Path,
     source_id: &str,
     position: usize,
-) -> Result<Option<SavedItem>, Error> {
+) -> rusqlite::Result<Option<SavedItem>> {
     let found = db
         .query_row(
             "SELECT id, path, title, cover, extra FROM item
@@ -715,7 +792,7 @@ fn record_collection(
     listing: &Listing,
     cover: Option<&Path>,
     items: &[SavedItem],
-) -> Result<i64, Error> {
+) -> rusqlite::Result<i64> {
     let tx = db.transaction()?;
     let collection_id: i64 = tx.query_row(
         "INSERT INTO collection (category_id, name, cover, source) VALUES (?1, ?2, ?3, ?4)

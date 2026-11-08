@@ -7,5 +7,6 @@ class ElsewhereApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         Core.start(this)
+        Health.watch(this)
     }
 }

@@ -1,14 +1,16 @@
 //! Keeps jobs in the library database (migrations/0003_jobs.sql): one row per job with the
 //! params to run it again, and every log line.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, params};
 
 use super::{JobId, JobState, KEEP_FINISHED, Level, LogLine, MAX_LOG_LINES, Status};
+use crate::problem::{Kind, Problem};
 
 pub(super) struct Store {
     db: Connection,
+    path: PathBuf,
 }
 
 /// A job as it comes back from the database.
@@ -25,7 +27,16 @@ impl Store {
     pub fn open(path: &Path) -> Result<Store, String> {
         let db = crate::db::open(path)
             .map_err(|err| format!("could not open the jobs database: {err}"))?;
-        Ok(Store { db })
+        Ok(Store {
+            db,
+            path: path.to_owned(),
+        })
+    }
+
+    /// Opens a new connection after the old one failed (a locked or lost file handle).
+    pub fn reopen(&mut self) -> rusqlite::Result<()> {
+        self.db = crate::db::open(&self.path)?;
+        Ok(())
     }
 
     /// Loads the jobs of earlier runs, oldest first. Keeps only the newest KEEP_FINISHED
@@ -43,8 +54,13 @@ impl Store {
                ORDER BY id DESC LIMIT ?1)",
             [KEEP_FINISHED as i64],
         )?;
+        // The new line goes after every saved line, even if log_lines fell behind them.
         let cut_short: Vec<(i64, i64)> = tx
-            .prepare("SELECT id, log_lines FROM job WHERE status IN ('queued','running')")?
+            .prepare(
+                "SELECT id, max(log_lines, coalesce(
+                   (SELECT max(number) FROM job_log WHERE job_id = job.id), 0))
+                 FROM job WHERE status IN ('queued','running')",
+            )?
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<_, _>>()?;
         for (id, lines) in cut_short {
@@ -62,7 +78,8 @@ impl Store {
         let mut jobs = Vec::new();
         {
             let mut select = tx.prepare(
-                "SELECT id, kind, title, params, status, done, failed, total, last_error, log_lines
+                "SELECT id, kind, title, params, status, done, failed, total, last_error, log_lines,
+                   error_kind, error_detail, error_retry
                  FROM job ORDER BY id",
             )?;
             let mut lines = tx.prepare(
@@ -81,7 +98,7 @@ impl Store {
                     failed: row.get::<_, i64>(6)? as usize,
                     total: row.get::<_, Option<i64>>(7)?.map(|total| total as usize),
                     current: None,
-                    last_error: row.get(8)?,
+                    last_error: problem_from(row.get(8)?, row.get(10)?, row.get(11)?, row.get(12)?),
                     log_lines: row.get::<_, i64>(9)? as usize,
                 };
                 Ok((state, row.get::<_, String>(3)?))
@@ -132,7 +149,8 @@ impl Store {
         {
             let mut update = tx.prepare_cached(
                 "UPDATE job SET title = ?2, status = ?3, done = ?4, failed = ?5, total = ?6,
-                   last_error = ?7, log_lines = ?8, updated_at = unixepoch() WHERE id = ?1",
+                   last_error = ?7, log_lines = ?8, error_kind = ?9, error_detail = ?10,
+                   error_retry = ?11, updated_at = unixepoch() WHERE id = ?1",
             )?;
             for state in states {
                 update.execute(params![
@@ -142,8 +160,14 @@ impl Store {
                     state.done as i64,
                     state.failed as i64,
                     state.total.map(|total| total as i64),
-                    state.last_error,
+                    state.last_error.as_ref().map(|problem| &problem.text),
                     state.log_lines as i64,
+                    state
+                        .last_error
+                        .as_ref()
+                        .map(|problem| kind_text(problem.kind)),
+                    state.last_error.as_ref().map(|problem| &problem.detail),
+                    state.last_error.as_ref().map(|problem| problem.retry),
                 ])?;
             }
             let mut insert = tx.prepare_cached(
@@ -197,6 +221,43 @@ fn status_from(text: &str) -> Status {
         // queued and running were turned into interrupted while loading.
         _ => Status::Interrupted,
     }
+}
+
+fn kind_text(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Input => "input",
+        Kind::Unavailable => "unavailable",
+        Kind::Network => "network",
+        Kind::Storage => "storage",
+        Kind::Setup => "setup",
+        Kind::Cancelled => "cancelled",
+        Kind::Bug => "bug",
+    }
+}
+
+/// A saved last error. Jobs saved before problems had kinds come back as Unavailable.
+fn problem_from(
+    text: Option<String>,
+    kind: Option<String>,
+    detail: Option<String>,
+    retry: Option<bool>,
+) -> Option<Problem> {
+    let text = text?;
+    let kind = match kind.as_deref() {
+        Some("input") => Kind::Input,
+        Some("network") => Kind::Network,
+        Some("storage") => Kind::Storage,
+        Some("setup") => Kind::Setup,
+        Some("cancelled") => Kind::Cancelled,
+        Some("bug") => Kind::Bug,
+        _ => Kind::Unavailable,
+    };
+    Some(Problem {
+        kind,
+        detail: detail.unwrap_or_else(|| text.clone()),
+        retry: retry.unwrap_or(true),
+        text,
+    })
 }
 
 fn level_text(level: Level) -> &'static str {

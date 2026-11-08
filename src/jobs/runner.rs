@@ -1,23 +1,33 @@
 //! The machinery behind `jobs`: one table of jobs behind a lock, a thread per running job,
-//! and one delivery thread that saves changed jobs and then hands their states to the
-//! listener.
+//! one delivery thread that saves changed jobs and then hands their states to the
+//! listener, and one watchdog thread. Delivery and watchdog run under `health::supervise`:
+//! when one crashes it is restarted, and delivery then saves and sends everything again.
 //!
 //! Locks are always taken in this order: table, then store (or runners). The delivery
 //! thread never holds the table while it writes to the store or calls the listener.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::store::{Saved, Store};
 use super::{
-    Job, JobId, JobState, Level, LogLine, MAX_LOG_LINES, PROGRESS_INTERVAL, Runner, Status,
+    GRACE, Job, JobId, JobState, Level, LogLine, MAX_LOG_LINES, PROGRESS_INTERVAL, Runner, STALL,
+    Status,
 };
+use crate::health;
+use crate::logs;
+use crate::problem::{self, Problem};
 
 type Listener = Arc<dyn Fn(JobState) + Send + Sync>;
 type Stop = Arc<dyn Fn() + Send + Sync>;
+
+/// Store saves that may fail in a row (each followed by reopening the database) before the
+/// store counts as broken.
+const STORE_FAILURES: usize = 5;
 
 /// What `Jobs::open` found in the database.
 pub(super) struct Restored {
@@ -27,13 +37,44 @@ pub(super) struct Restored {
 }
 
 pub(super) struct Inner {
+    /// Names this instance's parts in `health`: "<name>-delivery", "-watchdog", "-store",
+    /// "-workers".
+    pub(super) name: String,
     table: Mutex<Table>,
     /// Wakes the delivery thread when something changed (or on shutdown).
     changed: Condvar,
     listener: Mutex<Option<Listener>>,
     runners: Mutex<HashMap<String, Runner>>,
     store: Mutex<Option<Store>>,
+    store_failures: AtomicUsize,
+    delivery_runs: AtomicUsize,
+    watchdog: Mutex<(Duration, Duration)>,
     max_running: usize,
+    #[cfg(test)]
+    pub(super) faults: Faults,
+}
+
+/// Failures tests can ask for, per jobs instance.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct Faults {
+    /// The delivery thread panics this many times.
+    pub panic_delivery: AtomicUsize,
+    /// This many saves fail.
+    pub fail_saves: AtomicUsize,
+}
+
+/// Counts one down; false when it is already 0.
+#[cfg(test)]
+fn take(counter: &AtomicUsize) -> bool {
+    let mut left = counter.load(Ordering::SeqCst);
+    while left > 0 {
+        match counter.compare_exchange(left, left - 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(now) => left = now,
+        }
+    }
+    false
 }
 
 #[derive(Default)]
@@ -43,6 +84,8 @@ struct Table {
     running: usize,
     next_id: JobId,
     shut_down: bool,
+    /// Set by the delivery thread when it saved the last changes after shut_down.
+    closed: bool,
 }
 
 pub(super) struct Entry {
@@ -51,6 +94,7 @@ pub(super) struct Entry {
     log: VecDeque<LogLine>,
     cancelled: bool,
     stops: Vec<Stop>,
+    interrupts: Vec<Stop>,
     /// What the listener still has to get: nothing, a throttled progress change, or a
     /// change to send right away.
     pending: Pending,
@@ -61,6 +105,10 @@ pub(super) struct Entry {
     log_saved: usize,
     /// False for jobs kept in memory only: their log can always be trimmed.
     kept: bool,
+    /// The last sign of life of a running job (watchdog).
+    alive: Instant,
+    /// When the watchdog interrupted it, until it shows life again.
+    interrupted: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -79,10 +127,13 @@ impl Entry {
             log: log.into(),
             cancelled: false,
             stops: Vec::new(),
+            interrupts: Vec::new(),
             pending: Pending::Now,
             last_sent: None,
             unsaved: false,
             kept,
+            alive: Instant::now(),
+            interrupted: None,
         }
     }
 
@@ -109,7 +160,7 @@ impl Entry {
     }
 
     /// Bumps the revision; the change is sent at once (and saved) or, for byte progress,
-    /// throttled (and not saved).
+    /// throttled (and not saved). Any change is a sign of life.
     fn touch(&mut self, now: bool) {
         self.state.revision += 1;
         let pending = if now {
@@ -119,11 +170,24 @@ impl Entry {
         };
         self.pending = self.pending.max(pending);
         self.unsaved |= now;
+        self.alive = Instant::now();
+        self.interrupted = None;
     }
 }
 
 impl Inner {
-    pub(super) fn start(max_running: usize, restored: Option<Restored>) -> Arc<Inner> {
+    /// Starts the jobs: the table, then the supervised delivery and watchdog threads.
+    /// `name` names the parts in `health`; None makes a unique one (tests run many).
+    pub(super) fn start(
+        max_running: usize,
+        restored: Option<Restored>,
+        name: Option<&str>,
+    ) -> Arc<Inner> {
+        static INSTANCES: AtomicUsize = AtomicUsize::new(0);
+        let name = name.map_or_else(
+            || format!("jobs#{}", INSTANCES.fetch_add(1, Ordering::SeqCst)),
+            str::to_owned,
+        );
         let mut table = Table {
             next_id: 1,
             ..Table::default()
@@ -139,18 +203,34 @@ impl Inner {
             restored.store
         });
         let inner = Arc::new(Inner {
+            name,
             table: Mutex::new(table),
             changed: Condvar::new(),
             listener: Mutex::new(None),
             runners: Mutex::new(HashMap::new()),
             store: Mutex::new(store),
+            store_failures: AtomicUsize::new(0),
+            delivery_runs: AtomicUsize::new(0),
+            watchdog: Mutex::new((STALL, GRACE)),
             max_running,
+            #[cfg(test)]
+            faults: Faults::default(),
         });
         let delivery = Arc::clone(&inner);
-        thread::Builder::new()
-            .name("jobs-delivery".to_owned())
-            .spawn(move || delivery.deliver())
-            .expect("could not start the jobs delivery thread");
+        let started = health::supervise(format!("{}-delivery", inner.name), move || {
+            delivery.deliver()
+        });
+        let watchdog = Arc::clone(&inner);
+        let watching =
+            health::supervise(format!("{}-watchdog", inner.name), move || watchdog.watch());
+        for (part, result) in [("delivery", started), ("watchdog", watching)] {
+            if let Err(err) = result {
+                health::broken(
+                    &format!("{}-{part}", inner.name),
+                    format!("could not start a thread: {err}"),
+                );
+            }
+        }
         inner
     }
 
@@ -180,6 +260,13 @@ impl Inner {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(kind.to_owned(), runner);
+    }
+
+    pub(super) fn set_watchdog(&self, stall: Duration, grace: Duration) {
+        *self
+            .watchdog
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = (stall, grace);
     }
 
     pub(super) fn set_listener(&self, listener: Listener) {
@@ -255,7 +342,9 @@ impl Inner {
                 let kind = entry.state.kind.clone();
                 finish(
                     entry,
-                    Err(format!("no runner is registered for {kind} jobs")),
+                    Err(Problem::bug(format!(
+                        "no runner is registered for {kind} jobs"
+                    ))),
                 );
                 continue;
             };
@@ -270,7 +359,10 @@ impl Inner {
             if let Err(err) = spawned {
                 table.running -= 1;
                 if let Some(entry) = table.jobs.get_mut(&id) {
-                    finish(entry, Err(format!("could not start a thread: {err}")));
+                    finish(
+                        entry,
+                        Err(Problem::bug(format!("could not start a thread: {err}"))),
+                    );
                 }
             }
         }
@@ -289,7 +381,7 @@ impl Inner {
                     .map(|text| text.to_string())
                     .or_else(|| panic.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "unknown reason".to_owned());
-                Err(format!("the job crashed: {reason}"))
+                Err(Problem::bug(format!("the job crashed: {reason}")))
             });
         let mut table = self.lock();
         table.running -= 1;
@@ -313,6 +405,21 @@ impl Inner {
         edit(entry);
         entry.touch(now);
         self.changed.notify_all();
+    }
+
+    pub(super) fn keep_alive(&self, id: JobId) {
+        if let Some(entry) = self.lock().jobs.get_mut(&id) {
+            entry.alive = Instant::now();
+            entry.interrupted = None;
+        }
+    }
+
+    pub(super) fn current_position(&self, id: JobId) -> Option<usize> {
+        self.lock()
+            .jobs
+            .get(&id)
+            .and_then(|entry| entry.state.current.as_ref())
+            .map(|current| current.position)
     }
 
     pub(super) fn cancel(&self, id: JobId) -> bool {
@@ -363,6 +470,7 @@ impl Inner {
         state.last_error = None;
         entry.cancelled = false;
         entry.stops.clear();
+        entry.interrupts.clear();
         entry.write_log(Level::Info, "Resumed.".to_owned());
         entry.touch(true);
         table.queue.push_back(id);
@@ -404,6 +512,12 @@ impl Inner {
         };
         if cancelled {
             stop();
+        }
+    }
+
+    pub(super) fn on_interrupt(&self, id: JobId, interrupt: Stop) {
+        if let Some(entry) = self.lock().jobs.get_mut(&id) {
+            entry.interrupts.push(interrupt);
         }
     }
 
@@ -449,17 +563,41 @@ impl Inner {
         true
     }
 
-    /// Stops the delivery thread after it saves what is not saved yet.
+    /// Stops the delivery and watchdog threads. Waits (at most 5 s) until delivery saved
+    /// what is not saved yet.
     pub(super) fn shut_down(&self) {
-        self.lock().shut_down = true;
+        let mut table = self.lock();
+        table.shut_down = true;
         self.changed.notify_all();
+        let _ = self
+            .changed
+            .wait_timeout_while(table, Duration::from_secs(5), |table| !table.closed);
     }
 
     /// The delivery thread: waits for changes, saves the changed jobs, then hands each
     /// changed job's latest state to the listener, in job order and outside the lock.
-    fn deliver(self: Arc<Self>) {
+    fn deliver(self: &Arc<Self>) {
         let mut table = self.lock();
+        // Restarting after a crash: whatever the crashed round did not finish is sent and
+        // saved again (saving is idempotent, sending replaces the shown state). Rare, so
+        // simply everything in memory.
+        let restarted = self.delivery_runs.fetch_add(1, Ordering::SeqCst) > 0;
+        for entry in table.jobs.values_mut().filter(|_| restarted) {
+            entry.pending = Pending::Now;
+            if entry.kept {
+                entry.unsaved = true;
+                entry.log_saved = entry
+                    .log
+                    .front()
+                    .map_or(entry.log_saved, |first| first.number.saturating_sub(1))
+                    .min(entry.log_saved);
+            }
+        }
         loop {
+            #[cfg(test)]
+            if take(&self.faults.panic_delivery) {
+                panic!("test: the delivery thread crashes");
+            }
             let closing = table.shut_down;
             let now = Instant::now();
             let mut ready = Vec::new();
@@ -478,7 +616,8 @@ impl Inner {
                 if let Some(due) = due.filter(|_| !due_now) {
                     next_wake = Some(next_wake.map_or(due, |wake| wake.min(due)));
                 }
-                if entry.unsaved && entry.kept && (due_now || closing) {
+                // Saved at once, also when a failed save left it unsaved with nothing to send.
+                if entry.unsaved && entry.kept {
                     to_save.push((entry.state.clone(), entry.log_saved));
                     lines.extend(
                         entry
@@ -499,6 +638,8 @@ impl Inner {
 
             if ready.is_empty() && to_save.is_empty() {
                 if closing {
+                    table.closed = true;
+                    self.changed.notify_all();
                     return;
                 }
                 table = match next_wake {
@@ -520,9 +661,10 @@ impl Inner {
 
             // Saved first, so the app never shows what a crash could undo.
             let states: Vec<JobState> = to_save.iter().map(|(state, _)| state.clone()).collect();
-            let saved = match self.store().as_mut() {
-                Some(store) if !states.is_empty() => store.save(&states, &lines),
-                _ => Ok(()),
+            let saved = if states.is_empty() {
+                Ok(())
+            } else {
+                self.save(&states, &lines)
             };
 
             let listener = self
@@ -548,9 +690,8 @@ impl Inner {
                     entry.pending = entry.pending.max(Pending::Throttled);
                 }
             }
-            if let Err(err) = saved {
+            if saved.is_err() {
                 // Try again next round: nothing that was not saved counts as saved.
-                eprintln!("jobs: could not save job states: {err}");
                 for (state, log_saved) in &to_save {
                     if let Some(entry) = table.jobs.get_mut(&state.id) {
                         entry.unsaved = true;
@@ -558,6 +699,8 @@ impl Inner {
                     }
                 }
                 if closing {
+                    table.closed = true;
+                    self.changed.notify_all();
                     return;
                 }
                 table = self
@@ -568,21 +711,143 @@ impl Inner {
             }
         }
     }
+
+    /// Saves states and lines. On failure the store reopens its database for the next
+    /// round; after STORE_FAILURES failures in a row it counts as broken.
+    fn save(&self, states: &[JobState], lines: &[(JobId, LogLine)]) -> Result<(), ()> {
+        let part = format!("{}-store", self.name);
+        let mut store = self.store();
+        let Some(store) = store.as_mut() else {
+            return Ok(());
+        };
+        #[cfg(test)]
+        let saved = if take(&self.faults.fail_saves) {
+            Err(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(10),
+                Some("test: disk I/O error".to_owned()),
+            ))
+        } else {
+            store.save(states, lines)
+        };
+        #[cfg(not(test))]
+        let saved = store.save(states, lines);
+        match saved {
+            Ok(()) => {
+                if self.store_failures.swap(0, Ordering::SeqCst) > 0 {
+                    logs::info("jobs", "Saving jobs works again").write();
+                    health::healthy(&part);
+                }
+                Ok(())
+            }
+            Err(err) => {
+                let failures = self.store_failures.fetch_add(1, Ordering::SeqCst) + 1;
+                let problem = problem::from_sqlite(&err, "saving jobs");
+                if failures >= STORE_FAILURES {
+                    if !matches!(health::state(&part), health::State::Broken(_)) {
+                        health::broken(&part, problem.detail.clone());
+                    }
+                } else {
+                    logs::warn(
+                        "jobs",
+                        format!("Saving jobs failed ({failures} in a row); reopening the database"),
+                    )
+                    .detail(problem.detail.clone())
+                    .write();
+                    let _ = store.reopen();
+                }
+                Err(())
+            }
+        }
+    }
+
+    /// The watchdog thread: a running job with no sign of life for `stall` is interrupted
+    /// (its runner tries the step again); one that still shows no life `grace` later is
+    /// stuck: it fails, and the app needs a restart (its thread may never come back).
+    fn watch(self: &Arc<Self>) {
+        loop {
+            let (stall, grace) = *self
+                .watchdog
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let tick =
+                (stall.min(grace) / 4).clamp(Duration::from_millis(10), Duration::from_secs(1));
+            thread::sleep(tick);
+            let mut to_interrupt = Vec::new();
+            let mut stuck = false;
+            {
+                let mut table = self.lock();
+                if table.shut_down {
+                    return;
+                }
+                let now = Instant::now();
+                for entry in table.jobs.values_mut() {
+                    if entry.state.status != Status::Running {
+                        continue;
+                    }
+                    match entry.interrupted {
+                        None if now.duration_since(entry.alive) > stall => {
+                            entry.interrupted = Some(now);
+                            let message =
+                                format!("No progress for {}; trying again.", duration_text(stall));
+                            entry.write_log(Level::Warning, message.clone());
+                            entry.state.revision += 1;
+                            entry.pending = Pending::Now;
+                            entry.unsaved = true;
+                            logs::warn("jobs", message).job(entry.state.id).write();
+                            to_interrupt.extend(entry.interrupts.iter().cloned());
+                        }
+                        Some(at) if now.duration_since(at) > grace => {
+                            let problem = Problem::bug(format!(
+                                "job {} stopped responding for {}",
+                                entry.state.id,
+                                duration_text(stall + grace)
+                            ));
+                            // Broken first: whoever sees the failed job (the app checks
+                            // health after a Bug) must already see the restart need.
+                            health::broken(
+                                &format!("{}-workers", self.name),
+                                problem.detail.clone(),
+                            );
+                            stuck = true;
+                            finish(entry, Err(problem));
+                        }
+                        _ => {}
+                    }
+                }
+                if !to_interrupt.is_empty() || stuck {
+                    self.changed.notify_all();
+                }
+            }
+            for interrupt in to_interrupt {
+                interrupt();
+            }
+        }
+    }
+}
+
+fn duration_text(duration: Duration) -> String {
+    match duration.as_secs() {
+        0 => format!("{} ms", duration.as_millis()),
+        seconds if seconds < 120 => format!("{seconds} s"),
+        seconds => format!("{} minutes", seconds / 60),
+    }
 }
 
 /// Ends a job exactly once: Cancelled if it was asked to stop, else Done or Failed.
-fn finish(entry: &mut Entry, result: Result<(), String>) {
+fn finish(entry: &mut Entry, result: Result<(), Problem>) {
     if entry.state.status.is_finished() {
         return;
     }
     entry.state.status = match (&result, entry.cancelled) {
         (_, true) => Status::Cancelled,
+        (Err(problem), false) if problem.is_cancelled() => Status::Cancelled,
         (Ok(()), false) => Status::Done,
         (Err(_), false) => Status::Failed,
     };
-    if let (Err(error), false) = (result, entry.cancelled) {
-        entry.state.last_error = Some(error.clone());
-        entry.write_log(Level::Error, error);
+    if let (Err(problem), Status::Failed) = (result, entry.state.status) {
+        problem::log(&problem, "jobs", Some(entry.state.id), None);
+        entry.write_log(Level::Error, problem.text.clone());
+        entry.state.last_error = Some(problem);
     }
     entry.state.current = None;
     entry.touch(true);

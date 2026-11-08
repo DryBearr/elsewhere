@@ -5,8 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use super::{ApiError, bad_args, failed};
+use super::{ApiError, bad_args, not_ready};
 use crate::jobs::{self, Jobs};
+use crate::{health, logs, problem};
 
 /// The app's folders, given to `start`.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -53,9 +54,7 @@ static STARTING: Mutex<()> = Mutex::new(());
 
 /// The started core, or NotReady.
 pub(super) fn core() -> Result<&'static Core, ApiError> {
-    CORE.get().ok_or_else(|| ApiError::NotReady {
-        message: "call start first".to_owned(),
-    })
+    CORE.get().ok_or_else(|| not_ready("call start first"))
 }
 
 /// Starts the core: makes the folders, opens the database and the jobs (jobs cut short
@@ -85,14 +84,23 @@ pub fn start(
                 "folders must be absolute paths, not {dir:?}"
             )));
         }
-        fs::create_dir_all(dir).map_err(|err| failed(format!("cannot make {dir}: {err}")))?;
+        fs::create_dir_all(dir)
+            .map_err(|err| ApiError::from(problem::from_io(&err, &format!("making {dir}"))))?;
     }
+
+    // The log lives on the phone only (see src/logs.rs); from here on panics leave notes.
+    logs::init(&Path::new(&folders.data).join("logs"));
+    logs::info(
+        "core",
+        format!("Starting Elsewhere {}", env!("CARGO_PKG_VERSION")),
+    )
+    .write();
 
     #[cfg(feature = "ytdlp")]
     super::ytdlp::prepare_env(&folders, python_bundle.is_some());
 
     let db = Path::new(&folders.data).join("elsewhere.db");
-    let jobs = jobs::open_global(&db).map_err(|message| ApiError::NotReady { message })?;
+    let jobs = jobs::open_global(&db).map_err(not_ready)?;
     super::demo::register(jobs);
     #[cfg(feature = "playlists")]
     super::playlists::register(jobs, &db, Path::new(&folders.media));
@@ -135,4 +143,62 @@ pub fn core_status() -> CoreStatus {
             .filter(|state| state.status == jobs::Status::Running)
             .count() as u32,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum PartState {
+    Healthy,
+    /// It failed and the core is restarting it.
+    Recovering,
+    /// The core gave up on it: only an app restart helps.
+    Broken,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CorePart {
+    /// For example "jobs-delivery", "jobs-store", "jobs-workers".
+    pub name: String,
+    pub state: PartState,
+    /// Why it is recovering or broken.
+    pub reason: Option<String>,
+    pub restarts: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CoreHealth {
+    /// True once a part is broken: restart the app (Android does it by itself; iOS asks
+    /// the person). Everything that matters is saved, so a restart loses nothing.
+    pub needs_restart: bool,
+    pub parts: Vec<CorePart>,
+}
+
+/// How the core's parts are doing. Cheap: call it as often as needed.
+#[uniffi::export]
+pub fn core_health() -> CoreHealth {
+    CoreHealth {
+        needs_restart: health::needs_restart(),
+        parts: health::parts()
+            .into_iter()
+            .map(|part| {
+                let (state, reason) = match part.state {
+                    health::State::Healthy => (PartState::Healthy, None),
+                    health::State::Recovering(reason) => (PartState::Recovering, Some(reason)),
+                    health::State::Broken(reason) => (PartState::Broken, Some(reason)),
+                };
+                CorePart {
+                    name: part.name,
+                    state,
+                    reason,
+                    restarts: part.restarts.min(u32::MAX as usize) as u32,
+                }
+            })
+            .collect(),
+    }
+}
+
+/// For self-tests only: marks the core broken, so the app's restart path can be checked
+/// on a real phone.
+#[uniffi::export]
+pub fn simulate_broken_core() {
+    health::broken("self-test", "a self-test asked for a broken core");
 }

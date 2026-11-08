@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use super::{ApiError, bad_args, core};
 use crate::jobs::{Job, Jobs, Level};
+use crate::problem::Problem;
 
 const KIND: &str = "demo";
 
@@ -68,8 +69,9 @@ fn parse(params: &str) -> Option<DemoOptions> {
 }
 
 /// Ten progress steps per item, then done (or failed); stops between steps when cancelled.
-fn run(job: &Job, params: &str) -> Result<(), String> {
-    let options = parse(params).ok_or_else(|| format!("bad demo params {params:?}"))?;
+fn run(job: &Job, params: &str) -> Result<(), Problem> {
+    let options =
+        parse(params).ok_or_else(|| Problem::bug(format!("bad demo params {params:?}")))?;
     job.set_total(options.items as usize);
     const STEPS: u64 = 10;
     const SIZE: u64 = 1_000_000;
@@ -88,7 +90,11 @@ fn run(job: &Job, params: &str) -> Result<(), String> {
             job.progress(bytes, Some(SIZE), Some(SIZE as f64), Some(STEPS - done));
         }
         if Some(position) == options.fail_at {
-            job.item_failed(&format!("Demo item {position} failed on purpose"));
+            job.item_failed(&Problem::new(
+                crate::problem::Kind::Unavailable,
+                format!("Demo item {position} failed on purpose"),
+                "demo",
+            ));
         } else {
             job.item_done();
         }

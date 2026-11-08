@@ -50,7 +50,7 @@ fun AddScreen(onStarted: () -> Unit) {
         Core.io.launch {
             val result = runCatching(call)
             withContext(Dispatchers.Main) {
-                result.onSuccess { onStarted() }.onFailure { error = it.message ?: it.toString() }
+                result.onSuccess { onStarted() }.onFailure { error = describe(it) }
             }
         }
     }

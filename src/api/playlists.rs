@@ -76,7 +76,7 @@ pub(super) fn register(jobs: &Jobs, db: &Path, media: &Path) {
         if !crate::ytdlp::is_started() {
             job.log(Level::Info, "Starting yt-dlp…");
         }
-        super::ytdlp::ensure().map_err(|err| format!("yt-dlp could not start: {err}"))?;
+        super::ytdlp::ensure().map_err(super::core_problem)?;
         playlists::run_job(job, &db, &media, params)
     });
 }

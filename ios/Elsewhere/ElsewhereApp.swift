@@ -33,12 +33,8 @@ struct ElsewhereApp: App {
 
 /// The text of an error from the Rust core (or any other error).
 func describe(_ error: Error) -> String {
-    if let error = error as? ApiError {
-        switch error {
-        case let .NotReady(message), let .BadArgs(message), let .Cancelled(message),
-             let .YtDlp(message), let .Failed(message):
-            return message
-        }
+    if case let ApiError.Failed(problem) = error {
+        return problem.text
     }
     return "\(error)"
 }

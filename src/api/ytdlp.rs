@@ -54,20 +54,15 @@ pub(crate) fn ensure() -> Result<(), ApiError> {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(bundle) = bundle.as_deref() {
         if !bundle.rewind() {
-            return Err(ApiError::NotReady {
-                message: "cannot open the Python bundle".to_owned(),
-            });
+            return Err(super::not_ready("cannot open the Python bundle"));
         }
         let reader = BundleReader {
             bundle,
             chunk: Vec::new(),
             offset: 0,
         };
-        let unpacked = phone::unpack(reader, Path::new(&core.folders.data)).map_err(|err| {
-            ApiError::NotReady {
-                message: format!("could not unpack Python: {err}"),
-            }
-        })?;
+        let unpacked = phone::unpack(reader, Path::new(&core.folders.data))
+            .map_err(|err| super::not_ready(format!("could not unpack Python: {err}")))?;
         home = Some(unpacked);
     }
     let setup = ytdlp::Setup {
@@ -267,11 +262,6 @@ impl From<ytdlp::Event> for YtdlpEvent {
 
 impl From<ytdlp::Error> for ApiError {
     fn from(err: ytdlp::Error) -> Self {
-        match err {
-            ytdlp::Error::NotReady(message) => ApiError::NotReady { message },
-            ytdlp::Error::BadArgs(message) => ApiError::BadArgs { message },
-            ytdlp::Error::Cancelled => ApiError::Cancelled,
-            ytdlp::Error::YtDlp { kind, message } => ApiError::YtDlp { kind, message },
-        }
+        crate::problem::from_ytdlp(&err).into()
     }
 }

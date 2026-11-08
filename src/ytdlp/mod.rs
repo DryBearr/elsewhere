@@ -138,19 +138,42 @@ impl std::error::Error for Error {}
 /// so it stops at the next step, not mid-step. Half-downloaded `.part` files are kept,
 /// and yt-dlp resumes them the next time.
 #[derive(Debug, Clone, Default)]
-pub struct Cancel(Arc<AtomicBool>);
+pub struct Cancel(Arc<Flags>);
+
+#[derive(Debug, Default)]
+struct Flags {
+    cancelled: AtomicBool,
+    interrupted: AtomicBool,
+}
 
 impl Cancel {
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Stops the call for good (the person cancelled).
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.0.cancelled.store(true, Ordering::SeqCst);
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.cancelled.load(Ordering::SeqCst)
+    }
+
+    /// Stops only the running call (the watchdog saw no progress), so it can be tried again.
+    /// The call ends with Error::Cancelled; `take_interrupted` then says it was this.
+    pub fn interrupt(&self) {
+        self.0.interrupted.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether the last stop was an interrupt, and clears it for the next try.
+    pub fn take_interrupted(&self) -> bool {
+        self.0.interrupted.swap(false, Ordering::SeqCst)
+    }
+
+    /// Cancelled or interrupted: what the running call checks.
+    pub(crate) fn should_stop(&self) -> bool {
+        self.is_cancelled() || self.0.interrupted.load(Ordering::SeqCst)
     }
 }
 

@@ -20,6 +20,8 @@ mod ytdlp;
 
 use std::fmt;
 
+use crate::problem;
+
 pub use self::core::*;
 pub use self::demo::*;
 pub use self::jobs::*;
@@ -29,46 +31,104 @@ pub use self::playlists::*;
 #[cfg(feature = "ytdlp")]
 pub use self::ytdlp::*;
 
-/// Every error the apps can get. The apps receive the variant and its text (Display).
-#[derive(Debug, uniffi::Error)]
-#[uniffi(flat_error)]
-pub enum ApiError {
-    /// Not set up yet, or the setup is broken (for example Python is missing).
-    NotReady { message: String },
-    /// The arguments cannot be used.
-    BadArgs { message: String },
-    /// Stopped by a CancelToken.
+/// What kind of failure a problem is, so the app can pick what to show and offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ProblemKind {
+    /// The request is wrong (bad link, bad option): the person fixes it.
+    Input,
+    /// The thing is not there for us: private, removed, blocked in this country.
+    Unavailable,
+    /// The connection failed: offline, timeout, server trouble, rate limits.
+    Network,
+    /// The phone's storage: full, read-only, no permission.
+    Storage,
+    /// The app's own setup is broken (for example Python is missing).
+    Setup,
+    /// Someone stopped it. Not an error to show.
     Cancelled,
-    /// yt-dlp failed; `kind` is the yt-dlp error type, such as "DownloadError".
-    YtDlp { kind: String, message: String },
-    /// Anything else, such as a database or file error.
-    Failed { message: String },
+    /// Something that should never happen: a bug in the core.
+    Bug,
+}
+
+/// A failure, ready to show: `text` is for people, `detail` for the log, `retry` says
+/// whether a "Try again" button makes sense.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Problem {
+    pub kind: ProblemKind,
+    pub text: String,
+    pub detail: String,
+    pub retry: bool,
+}
+
+/// Every error the apps get: one problem (Kotlin `ApiException.Failed`, Swift
+/// `ApiError.Failed`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Error)]
+pub enum ApiError {
+    Failed { problem: Problem },
 }
 
 impl fmt::Display for ApiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ApiError::NotReady { message } => write!(f, "not ready: {message}"),
-            ApiError::BadArgs { message } => write!(f, "bad arguments: {message}"),
-            ApiError::Cancelled => f.write_str("cancelled"),
-            ApiError::YtDlp { message, .. } => f.write_str(message),
-            ApiError::Failed { message } => f.write_str(message),
-        }
+        let ApiError::Failed { problem } = self;
+        f.write_str(&problem.text)
     }
 }
 
 impl std::error::Error for ApiError {}
 
-fn failed(err: impl fmt::Display) -> ApiError {
-    ApiError::Failed {
-        message: err.to_string(),
+impl From<problem::Problem> for Problem {
+    fn from(problem: problem::Problem) -> Self {
+        Problem {
+            kind: match problem.kind {
+                problem::Kind::Input => ProblemKind::Input,
+                problem::Kind::Unavailable => ProblemKind::Unavailable,
+                problem::Kind::Network => ProblemKind::Network,
+                problem::Kind::Storage => ProblemKind::Storage,
+                problem::Kind::Setup => ProblemKind::Setup,
+                problem::Kind::Cancelled => ProblemKind::Cancelled,
+                problem::Kind::Bug => ProblemKind::Bug,
+            },
+            text: problem.text,
+            detail: problem.detail,
+            retry: problem.retry,
+        }
+    }
+}
+
+impl From<problem::Problem> for ApiError {
+    fn from(problem: problem::Problem) -> Self {
+        ApiError::Failed {
+            problem: problem.into(),
+        }
+    }
+}
+
+/// Back to the core's problem, for job runners that call the API's own functions.
+#[cfg_attr(not(feature = "playlists"), allow(dead_code))]
+fn core_problem(err: ApiError) -> problem::Problem {
+    let ApiError::Failed { problem } = err;
+    problem::Problem {
+        kind: match problem.kind {
+            ProblemKind::Input => problem::Kind::Input,
+            ProblemKind::Unavailable => problem::Kind::Unavailable,
+            ProblemKind::Network => problem::Kind::Network,
+            ProblemKind::Storage => problem::Kind::Storage,
+            ProblemKind::Setup => problem::Kind::Setup,
+            ProblemKind::Cancelled => problem::Kind::Cancelled,
+            ProblemKind::Bug => problem::Kind::Bug,
+        },
+        text: problem.text,
+        detail: problem.detail,
+        retry: problem.retry,
     }
 }
 
 fn bad_args(message: impl Into<String>) -> ApiError {
-    ApiError::BadArgs {
-        message: message.into(),
-    }
+    problem::Problem::input(message).into()
+}
+
+fn not_ready(detail: impl Into<String>) -> ApiError {
+    problem::Problem::setup(detail).into()
 }
 
 /// How serious a log line is (jobs and yt-dlp events).

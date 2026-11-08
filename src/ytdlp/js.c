@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "quickjs.h"
 
@@ -45,9 +46,22 @@ static char *exception_text(JSContext *ctx) {
     return text ? text : copy_text("JavaScript error", 16);
 }
 
+static double seconds_now(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+}
+
+// QuickJS asks this now and then; a nonzero answer stops the script ("interrupted").
+static int past_deadline(JSContext *ctx, void *deadline) {
+    (void)ctx;
+    return seconds_now() > *(double *)deadline;
+}
+
 // `code` must have a NUL byte at code[len], as QuickJS requires. Returns 0 with the printed
-// text in *output, or 1 with the error in *output. Free *output with elsewhere_js_free.
-int elsewhere_js_run(const char *code, size_t len, size_t max_stack, char **output) {
+// text in *output, or 1 with the error in *output, also when the script runs longer than
+// max_seconds. Free *output with elsewhere_js_free.
+int elsewhere_js_run(const char *code, size_t len, size_t max_stack, double max_seconds, char **output) {
     *output = NULL;
     JSRuntime *rt = JS_NewRuntime();
     if (!rt) {
@@ -55,6 +69,8 @@ int elsewhere_js_run(const char *code, size_t len, size_t max_stack, char **outp
         return 1;
     }
     JS_SetMaxStackSize(rt, max_stack);
+    double deadline = seconds_now() + max_seconds;
+    JS_SetInterruptHandler(rt, past_deadline, &deadline);
     JSContext *ctx = JS_NewContext(rt);
     if (!ctx) {
         JS_FreeRuntime(rt);

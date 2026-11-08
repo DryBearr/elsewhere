@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+use elsewhere::api::{ApiError, ProblemKind};
 use elsewhere::ytdlp::{self, Event, Setup};
 
 pub const SIZE: usize = 200_000;
@@ -80,6 +81,13 @@ fn page(path: &str) -> Option<(&'static str, String)> {
             playlist("Broken Playlist", &["/Band%20-%20Hit.mp4", "/missing.mp4"])
         }
         "/slow-playlist.html" => playlist("Slow Playlist", &["/slow.mp4", "/Band%20-%20Hit.mp4"]),
+        "/down-playlist.html" => playlist("Down Playlist", &["/down.mp4"]),
+        path if path.starts_with("/flaky-playlist-") => {
+            let key = path
+                .trim_start_matches("/flaky-playlist-")
+                .trim_end_matches(".html");
+            playlist("Flaky Playlist", &[&format!("/flaky-{key}.mp4")])
+        }
         path if path.starts_with("/api/search?") => {
             let answer = if path.contains("track_name=Hit&") {
                 r#"[{"trackName":"Hit","artistName":"Band","instrumental":false,"syncedLyrics":"[00:01.00] la la","plainLyrics":"la la"}]"#
@@ -100,7 +108,11 @@ fn page(path: &str) -> Option<(&'static str, String)> {
 /// - `/slow.mp4`: SLOW_SIZE bytes, sent slowly
 /// - `/broken.mp4`: promises SIZE bytes, sends half, then closes
 /// - `/missing.mp4`: 404
-/// - `/playlist.html`, `/broken-playlist.html`, `/slow-playlist.html`, `/api/search?...`: see `page`
+/// - `/flaky-<key>.mp4`: 503 for the first 22 requests (two of our tries: yt-dlp itself
+///   tries 11 times), then like any other
+/// - `/down.mp4`: always 503
+/// - `/playlist.html`, `/broken-playlist.html`, `/slow-playlist.html`,
+///   `/flaky-playlist-<key>.html`, `/down-playlist.html`, `/api/search?...`: see `page`
 pub fn server() -> &'static str {
     static URL: OnceLock<String> = OnceLock::new();
     URL.get_or_init(|| {
@@ -137,6 +149,22 @@ fn serve(mut stream: TcpStream) {
     }
     let mut parts = request.split_whitespace();
     let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+    let count = {
+        let mut hits = HITS.lock().unwrap();
+        let count = hits
+            .get_or_insert_with(Default::default)
+            .entry(path.to_owned())
+            .or_insert(0);
+        *count += 1;
+        *count
+    };
+    if path == "/down.mp4" || (path.starts_with("/flaky-") && path.ends_with(".mp4") && count <= 22)
+    {
+        let _ = stream.write_all(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        return;
+    }
 
     if let Some((content_type, text)) = page(path) {
         let _ = write!(
@@ -204,6 +232,17 @@ fn serve(mut stream: TcpStream) {
     }
 }
 
+static HITS: Mutex<Option<std::collections::HashMap<String, usize>>> = Mutex::new(None);
+
+/// How many requests the server got for `path`.
+pub fn hits(path: &str) -> usize {
+    HITS.lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|hits| hits.get(path).copied())
+        .unwrap_or(0)
+}
+
 /// Folders for `api::start` under a fresh test folder, with the test Python: the phone
 /// Python when YTDLP_TEST_PYTHON_HOME is set (emulator, simulator), else vendor/python.
 pub fn api_folders(name: &str) -> elsewhere::api::Folders {
@@ -225,4 +264,12 @@ pub fn api_folders(name: &str) -> elsewhere::api::Folders {
         python_paths,
         programs: None,
     }
+}
+
+/// The kind of problem an API call failed with, if it failed.
+pub fn kind_of<T>(result: &Result<T, ApiError>) -> Option<ProblemKind> {
+    result
+        .as_ref()
+        .err()
+        .map(|ApiError::Failed { problem }| problem.kind)
 }

@@ -55,11 +55,11 @@ jobs:
           export AR_x86_64_linux_android="$bin/llvm-ar"
           export PYO3_PYTHON=python3
           export PYO3_CROSS_LIB_DIR="$PWD/target/android/prefix/lib"
-          cargo test --no-run --features playlists --target x86_64-linux-android --test ytdlp --test playlists --test api --test api_lazy \
+          cargo test --no-run --features playlists --target x86_64-linux-android --lib --test ytdlp --test playlists --test api --test api_lazy --test recovery \
             --message-format=json > build.json
-          python3 scripts/test_binaries.py build.json ytdlp playlists api api_lazy
+          python3 scripts/test_binaries.py build.json elsewhere ytdlp playlists api api_lazy recovery
           # Runs a test program on the emulator with the phone Python, and ffmpeg on PATH:
-          #   run-tests.sh <ytdlp-tests|playlists-tests|api-tests|api_lazy-tests> [test arguments]
+          #   run-tests.sh <elsewhere-tests|ytdlp-tests|...> [test arguments]
           cat > run-tests.sh <<'SCRIPT'
           cd /data/local/tmp/elsewhere
           export HOME=$PWD TMPDIR=$PWD/tmp LD_LIBRARY_PATH=$PWD/lib PATH=$PWD/bin:$PATH
@@ -97,8 +97,10 @@ jobs:
             adb push target/android/libs/x86_64/. /data/local/tmp/elsewhere/lib/
             adb push target/android/libs/x86_64/libffmpeg.so /data/local/tmp/elsewhere/bin/ffmpeg
             adb push target/android/libs/x86_64/libffprobe.so /data/local/tmp/elsewhere/bin/ffprobe
-            adb push ytdlp-tests playlists-tests api-tests api_lazy-tests run-tests.sh /data/local/tmp/elsewhere/
-            adb shell chmod 755 /data/local/tmp/elsewhere/ytdlp-tests /data/local/tmp/elsewhere/playlists-tests /data/local/tmp/elsewhere/api-tests /data/local/tmp/elsewhere/api_lazy-tests /data/local/tmp/elsewhere/bin/ffmpeg /data/local/tmp/elsewhere/bin/ffprobe
+            adb push elsewhere-tests ytdlp-tests playlists-tests api-tests api_lazy-tests recovery-tests run-tests.sh /data/local/tmp/elsewhere/
+            adb shell chmod 755 /data/local/tmp/elsewhere/elsewhere-tests /data/local/tmp/elsewhere/recovery-tests /data/local/tmp/elsewhere/ytdlp-tests /data/local/tmp/elsewhere/playlists-tests /data/local/tmp/elsewhere/api-tests /data/local/tmp/elsewhere/api_lazy-tests /data/local/tmp/elsewhere/bin/ffmpeg /data/local/tmp/elsewhere/bin/ffprobe
+            adb shell sh /data/local/tmp/elsewhere/run-tests.sh elsewhere-tests --test-threads=4
+            adb shell sh /data/local/tmp/elsewhere/run-tests.sh recovery-tests
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh ytdlp-tests --test-threads=4
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh playlists-tests --test-threads=4
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh api-tests --test-threads=4
@@ -141,22 +143,24 @@ jobs:
           slice="$PWD/target/ios/Python.xcframework/ios-arm64_x86_64-simulator"
           export PYO3_PYTHON=python3
           export PYO3_CROSS_LIB_DIR="$slice/lib-arm64"
-          cargo test --no-run --features playlists --target aarch64-apple-ios-sim --test ytdlp --test playlists --test api --test api_lazy \
+          cargo test --no-run --features playlists --target aarch64-apple-ios-sim --lib --test ytdlp --test playlists --test api --test api_lazy --test recovery \
             --message-format=json > build.json
-          python3 scripts/test_binaries.py build.json ytdlp playlists api api_lazy
+          python3 scripts/test_binaries.py build.json elsewhere ytdlp playlists api api_lazy recovery
           # Lay them out like the app: Frameworks/ next to the programs, and one Python
           # home with the shared standard library plus this slice's C modules.
           mkdir -p run/Frameworks run/python/lib
-          mv ytdlp-tests playlists-tests api-tests api_lazy-tests run/
+          mv elsewhere-tests ytdlp-tests playlists-tests api-tests api_lazy-tests recovery-tests run/
           cp -R "$slice/Python.framework" run/Frameworks/
           cp -R target/ios/Python.xcframework/lib/python3.15 run/python/lib/
           cp -R "$slice/lib-arm64/python3.15/" run/python/lib/python3.15/
           find run -name '*.so' -exec codesign --force --sign - {} \;
-          codesign --force --sign - run/Frameworks/Python.framework run/ytdlp-tests run/playlists-tests run/api-tests run/api_lazy-tests
+          codesign --force --sign - run/Frameworks/Python.framework run/elsewhere-tests run/recovery-tests run/ytdlp-tests run/playlists-tests run/api-tests run/api_lazy-tests
 
       - name: Run the tests in the simulator
         run: |
           export SIMCTL_CHILD_YTDLP_TEST_PYTHON_HOME="$PWD/run/python"
+          xcrun simctl spawn "$UDID" "$PWD/run/elsewhere-tests" --test-threads=4
+          xcrun simctl spawn "$UDID" "$PWD/run/recovery-tests"
           xcrun simctl spawn "$UDID" "$PWD/run/ytdlp-tests" --test-threads=4
           xcrun simctl spawn "$UDID" "$PWD/run/playlists-tests" --test-threads=4
           xcrun simctl spawn "$UDID" "$PWD/run/api-tests" --test-threads=4

@@ -6,11 +6,13 @@ mod common;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, Once};
+use std::time::Duration;
 
 use common::{folder, ready, url};
 use elsewhere::jobs::{JobState, Jobs, Level, Status};
 use elsewhere::playlists::{self, Format, Options, Progress};
-use elsewhere::ytdlp::{self, Cancel};
+use elsewhere::problem::{self, Kind};
+use elsewhere::ytdlp::Cancel;
 use rusqlite::Connection;
 
 /// yt-dlp is ready and lyrics come from the test server.
@@ -20,6 +22,8 @@ fn setup() {
     LYRICS.call_once(|| {
         // SAFETY: set once, before any test reads it; nothing else here changes the environment.
         unsafe { std::env::set_var("ELSEWHERE_LRCLIB_URL", common::server()) };
+        // Connection trouble is tried again after 20 ms here, not after seconds.
+        problem::set_retry_delays(vec![Duration::from_millis(20); 3]);
     });
 }
 
@@ -40,7 +44,12 @@ fn progress() -> (
 ) {
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();
-    (events, move |event| sink.lock().unwrap().push(event))
+    // Working is only a sign of life for the watchdog; the tests look at the rest.
+    (events, move |event| {
+        if !matches!(event, Progress::Working) {
+            sink.lock().unwrap().push(event)
+        }
+    })
 }
 
 fn collection_items(db: &Path, collection_id: i64) -> Vec<(i64, String)> {
@@ -188,11 +197,82 @@ fn a_failing_item_is_reported_and_the_rest_saved() {
     assert_eq!(saved.failed.len(), 1);
     assert_eq!(saved.failed[0].position, 2);
     assert!(
-        saved.failed[0].error.contains("404"),
-        "{}",
-        saved.failed[0].error
+        saved.failed[0].problem.detail.contains("404"),
+        "{:?}",
+        saved.failed[0].problem
     );
     assert_eq!(collection_items(&db, saved.collection_id.unwrap()).len(), 1);
+}
+
+#[test]
+fn a_flaky_server_is_tried_again_until_it_works() {
+    setup();
+    let dir = folder("flaky");
+    let (events, on_progress) = progress();
+    let saved = playlists::save(
+        &dir.join("library.db"),
+        &dir,
+        &url("/flaky-playlist-save.html"),
+        &options(),
+        on_progress,
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!((saved.items.len(), saved.failed.len()), (1, 0), "{saved:?}");
+    let events = events.lock().unwrap();
+    let tries: Vec<(usize, usize)> = events
+        .iter()
+        .filter_map(|event| match event {
+            Progress::Retrying {
+                position: Some(1),
+                attempt,
+                of,
+                problem,
+            } => {
+                assert_eq!(problem.kind, Kind::Network, "{problem:?}");
+                Some((*attempt, *of))
+            }
+            _ => None,
+        })
+        .collect();
+    // yt-dlp tries 11 times itself; the server fails 22 requests, so about 2 of ours.
+    assert!(
+        !tries.is_empty() && tries.iter().all(|&(attempt, of)| attempt >= 2 && of == 4),
+        "{events:?}"
+    );
+    assert!(common::hits("/flaky-save.mp4") > 22);
+}
+
+#[test]
+fn a_server_that_stays_down_fails_the_item_after_four_tries() {
+    setup();
+    let dir = folder("down");
+    let (events, on_progress) = progress();
+    let saved = playlists::save(
+        &dir.join("library.db"),
+        &dir,
+        &url("/down-playlist.html"),
+        &options(),
+        on_progress,
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!((saved.items.len(), saved.failed.len()), (0, 1));
+    let problem = &saved.failed[0].problem;
+    assert_eq!(
+        (problem.kind, problem.retry),
+        (Kind::Network, true),
+        "{problem:?}"
+    );
+    assert!(problem.detail.contains("503"), "{problem:?}");
+    let retries = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| matches!(event, Progress::Retrying { .. }))
+        .count();
+    assert_eq!(retries, 3);
+    assert!(common::hits("/down.mp4") >= 4);
 }
 
 #[test]
@@ -257,7 +337,7 @@ fn cancelled_before_it_starts() {
     assert!(
         matches!(
             result,
-            Err(playlists::Error::YtDlp(ytdlp::Error::Cancelled))
+            Err(ref problem) if problem.is_cancelled()
         ),
         "{result:?}"
     );
@@ -390,13 +470,31 @@ fn a_playlist_job_with_a_broken_item_is_done_with_the_error_shown() {
         "{last:?}"
     );
     assert!(
-        last.last_error.as_deref().unwrap().starts_with("#2"),
+        last.last_error.as_ref().unwrap().text.starts_with("#2"),
         "{last:?}"
     );
     assert!(
         jobs.logs(id, 0)
             .iter()
             .any(|line| line.level == Level::Error && line.message.contains("404"))
+    );
+}
+
+#[test]
+fn a_playlist_job_logs_each_new_try() {
+    let (jobs, seen, id) = run_as_job(&url("/flaky-playlist-job.html"), "job-flaky");
+    let last = finished(&jobs, &seen, id);
+    assert_eq!(
+        (last.status, last.done, last.failed),
+        (Status::Done, 1, 0),
+        "{last:?}"
+    );
+    let log = jobs.logs(id, 0);
+    assert!(
+        log.iter().any(|line| line.level == Level::Warning
+            && line.message.starts_with("#1: ")
+            && line.message.ends_with("(try 2 of 4)")),
+        "{log:?}"
     );
 }
 
