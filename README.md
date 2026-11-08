@@ -1,46 +1,60 @@
 # elsewhere
 
+A Rust core with a native app on each phone:
+
+```
+src/                Rust core, shared by both apps
+  api.rs            everything the apps can call (UniFFI makes the Kotlin and Swift bindings)
+  ytdlp/            yt-dlp through embedded Python (feature `ytdlp`)
+  db.rs             the library database (SQLite)
+  phone.rs          what phones need around yt-dlp: unpack Python, link ffmpeg, environment
+android/            Kotlin + Jetpack Compose app (Gradle)
+ios/                Swift + SwiftUI app (XcodeGen)
+scripts/            build the parts the apps bundle
+```
+
+Plugging a feature in or out: a module in `src/` (with a feature flag when it carries weight), its section in `api.rs`, and one screen file per app (`android/.../XScreen.kt`, `ios/Elsewhere/XView.swift`), listed with one line in `MainActivity.kt` and `ElsewhereApp.swift`.
+
 ## yt-dlp module
 
-`src/ytdlp` wraps yt-dlp as plain Rust functions (`init`, `version`, `info`, `download`) through embedded Python. It sits behind the `ytdlp` Cargo feature, so the app builds without Python when the feature is off.
+`src/ytdlp` wraps yt-dlp as plain Rust functions (`init`, `version`, `info`, `download`) through embedded Python. It sits behind the `ytdlp` Cargo feature, so the core builds without Python when the feature is off.
 
-Desktop setup:
+Desktop (the Rust core and its tests):
 
 ```sh
 python3 -m pip install --target vendor/python -r scripts/requirements.txt   # yt-dlp for development and tests
 cargo test --features ytdlp                  # offline tests against a local test server
 cargo test --features ytdlp -- --ignored     # also tests against real websites
-cargo run --features ytdlp                   # the app, with the "Try yt-dlp" box working
 ```
 
-`scripts/requirements.txt` pins yt-dlp. Bump it there to update yt-dlp everywhere.
+`scripts/requirements.txt` pins yt-dlp. Bump it there to update yt-dlp everywhere. PyO3 links against Homebrew's Python on desktop (see `.cargo/config.toml`); set `PYO3_PYTHON` to use another Python that ships `libpython3.x.so`.
 
-Phones: both carry their own Python (the official CPython 3.15 builds from python.org) with yt-dlp in its site-packages. `scripts/mobile_python.py` downloads and trims them; the yt-dlp code is the same on every platform, and only `src/platform/` differs: where Python lives and the environment it needs.
+Phones: both carry their own Python (the official CPython 3.15 builds from python.org) with yt-dlp in its site-packages, prepared by `scripts/mobile_python.py`.
 
-- Android: the APK holds the standard library and yt-dlp as `assets/python.tar`; the app unpacks it into its private storage on the first start after each install or update. It also carries a small ffmpeg and ffprobe (`scripts/android_ffmpeg.sh`, copy-only, LGPL) so yt-dlp can merge YouTube's separate video and audio.
+- Android: the APK holds the standard library and yt-dlp as `assets/python.tar`; the app hands it to the core, which unpacks it on the first start after each install or update. It also carries a small ffmpeg and ffprobe (`scripts/android_ffmpeg.sh`, copy-only, LGPL) so yt-dlp can merge YouTube's separate video and audio. Needs the Android NDK, a JDK 17 and Gradle:
 
   ```sh
   python3 scripts/mobile_python.py android
   scripts/android_ffmpeg.sh
-  PYO3_CROSS_LIB_DIR=$PWD/target/android/prefix/lib cargo apk build --release --lib --features ytdlp
+  scripts/android_rust.sh
+  gradle -p android assembleRelease
   ```
 
-- iOS: the Xcode build copies Python into `Elsewhere.app/python` and turns each C module into a framework, as iOS requires (see `ios/project.yml`). iOS apps cannot run other programs, so there is no ffmpeg; yt-dlp picks formats that need no merging.
+- iOS: the Xcode build copies Python into `Elsewhere.app/python` and turns each C module into a framework, as iOS requires. iOS apps cannot run other programs, so there is no ffmpeg; yt-dlp picks formats that need no merging. Needs a Mac:
 
   ```sh
   python3 scripts/mobile_python.py ios
+  scripts/ios_rust.sh
   cd ios && xcodegen
   ```
 
-YouTube: yt-dlp has to solve JavaScript challenges. A QuickJS engine is compiled into the app (`third_party/quickjs`, `src/ytdlp/js.rs`), so this works on every platform without Deno or Node.
+YouTube: yt-dlp has to solve JavaScript challenges. A QuickJS engine is compiled into the core (`third_party/quickjs`, `src/ytdlp/js.rs`), so this works on every platform without Deno or Node.
 
 The Mobile workflow runs `tests/ytdlp.rs` on an Android emulator and an iOS simulator with that same Python, and starts the real app on both to check that yt-dlp starts.
 
-PyO3 links against Homebrew's Python (see `.cargo/config.toml`); set `PYO3_PYTHON` to use another Python that ships `libpython3.x.so`.
-
 ## Releases
 
-Push a tag that matches `version` in `Cargo.toml` (for example `v0.1.0`). The Release workflow builds `Elsewhere.apk` and an unsigned `Elsewhere.ipa`, attaches both to a GitHub release, and the Pages workflow refreshes the download page.
+Push a tag that matches `version` in `Cargo.toml` (for example `v0.3.0`); both apps take their version from there. The Release workflow builds `Elsewhere.apk` and an unsigned `Elsewhere.ipa`, attaches both to a GitHub release, and the Pages workflow refreshes the download page.
 
 To try a branch on a phone without releasing, run the Release workflow by hand (Actions → Release → Run workflow, or `gh workflow run release.yml --ref <branch>`). It builds both files and keeps them as workflow artifacts, without publishing anything. The APK is signed with the release key, so it installs over the Obtainium copy and keeps its data.
 

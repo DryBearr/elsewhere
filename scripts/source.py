@@ -12,7 +12,7 @@ import json
 import sys
 
 IPA_NAME = 'Elsewhere.ipa'
-MIN_IOS = '15.0'
+MIN_IOS = '16.0'
 TINT = '#185E52'
 
 
