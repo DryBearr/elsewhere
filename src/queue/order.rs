@@ -542,4 +542,136 @@ mod tests {
         assert_eq!(order.current().unwrap().item_id, 3);
         assert!(!order.jump(999));
     }
+
+    /// Every entry exactly once from where playback is to the end.
+    fn rest_once(order: &mut Order) -> Vec<i64> {
+        let mut copy = order.clone();
+        copy.repeat = Repeat::Off;
+        items(&mut copy, true, 10_000)
+    }
+
+    #[test]
+    fn shuffle_toggled_again_and_again_never_loses_an_entry() {
+        let mut order = Order::new(77);
+        order.set(&(1..=12).collect::<Vec<_>>(), 4);
+        for flip in 0..40 {
+            let current = order.current().unwrap().item_id;
+            order.set_shuffle(flip % 2 == 0);
+            assert_eq!(
+                order.current().unwrap().item_id,
+                current,
+                "flip {flip}: the current one stays"
+            );
+            assert_eq!(order.slots().len(), 12);
+            let mut all: Vec<usize> = order.order.clone();
+            all.sort_unstable();
+            assert_eq!(
+                all,
+                (0..12).collect::<Vec<_>>(),
+                "flip {flip}: a full play order"
+            );
+            if flip % 3 == 0 {
+                order.next(false);
+            }
+        }
+    }
+
+    #[test]
+    fn removing_while_shuffled_keeps_the_current_and_plays_the_rest_once() {
+        for seed in 0..60 {
+            let mut order = Order::new(seed);
+            order.set_shuffle(true);
+            order.set(&(1..=8).collect::<Vec<_>>(), 0);
+            order.next(true);
+            order.next(true);
+            let current = order.current().unwrap();
+            // Remove one already played and one still to come.
+            let played = order.slots()[order.order[0]].key;
+            let ahead = order.slots()[order.order[5]].key;
+            let ahead_item = order.slots()[order.order[5]].item_id;
+            assert_eq!(order.remove(played), (true, false));
+            assert_eq!(order.remove(ahead), (true, false));
+            assert_eq!(order.current(), Some(current), "seed {seed}");
+            let rest = rest_once(&mut order);
+            assert!(
+                !rest.contains(&ahead_item),
+                "seed {seed}: the removed one does not play"
+            );
+            assert_eq!(rest.len(), 5, "seed {seed}: {rest:?}");
+            assert_eq!(rest.iter().collect::<HashSet<_>>().len(), 5);
+        }
+    }
+
+    #[test]
+    fn adding_while_shuffled_at_any_point() {
+        // An empty shuffled queue: what is added plays.
+        let mut order = Order::new(3);
+        order.set_shuffle(true);
+        order.add(&[5, 6]);
+        assert!(order.current().is_some());
+        assert_eq!(rest_once(&mut order).len(), 2);
+        // The current entry is the last in the play order: the new one comes next.
+        let mut order = Order::new(3);
+        order.set_shuffle(true);
+        order.set(&[1, 2, 3], 0);
+        order.next(true);
+        order.next(true);
+        order.add(&[99]);
+        assert_eq!(order.next(true).unwrap().item_id, 99);
+    }
+
+    #[test]
+    fn moving_to_odd_places() {
+        let mut order = Order::new(1);
+        order.set(&[1, 2, 3], 0);
+        let key = order.slots()[0].key;
+        assert!(order.move_to(key, 0), "to where it is");
+        assert!(order.move_to(key, 1000), "past the end: to the end");
+        let ids: Vec<i64> = order.slots().iter().map(|slot| slot.item_id).collect();
+        assert_eq!(ids, [2, 3, 1]);
+        assert_eq!(
+            order.current().unwrap().item_id,
+            1,
+            "the current one moved with it"
+        );
+        assert_eq!(
+            rest_once(&mut order),
+            [1],
+            "and plays on from its new place"
+        );
+    }
+
+    #[test]
+    fn jumping_while_shuffled_follows_the_play_order() {
+        let mut order = Order::new(8);
+        order.set_shuffle(true);
+        order.set(&(1..=6).collect::<Vec<_>>(), 0);
+        let target = order.slots()[order.order[3]];
+        assert!(order.jump(target.key));
+        assert_eq!(order.current(), Some(target));
+        let after = rest_once(&mut order);
+        assert_eq!(
+            after.len(),
+            3,
+            "the play order goes on from there: {after:?}"
+        );
+    }
+
+    #[test]
+    fn restart_and_previous_with_repeat_one() {
+        let mut order = Order::new(1);
+        order.set(&[1, 2, 3], 2);
+        order.restart();
+        assert_eq!(order.current().unwrap().item_id, 1);
+        order.repeat = Repeat::One;
+        order.next(false);
+        assert_eq!(
+            order.previous().unwrap().item_id,
+            1,
+            "previous ignores repeat one"
+        );
+        let mut empty = Order::new(1);
+        empty.restart();
+        assert_eq!(empty.current(), None);
+    }
 }

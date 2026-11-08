@@ -18,6 +18,8 @@
 
 mod order;
 
+use std::cell::Cell;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -30,8 +32,21 @@ use crate::player::{Player, PlayerState, Status};
 use crate::problem::{Kind, Problem};
 use crate::{health, logs};
 
-/// Progress is saved at least this often while playing.
-const SAVE_EVERY: Duration = Duration::from_secs(10);
+/// Progress is saved at least this often while playing (milliseconds; see
+/// `set_save_interval`).
+static SAVE_EVERY_MS: AtomicU64 = AtomicU64::new(10_000);
+
+/// How often progress is saved while playing (10 s). For tests.
+pub fn set_save_interval(interval: Duration) {
+    SAVE_EVERY_MS.store(
+        interval.as_millis().min(u64::MAX as u128) as u64,
+        Ordering::SeqCst,
+    );
+}
+
+fn save_every() -> Duration {
+    Duration::from_millis(SAVE_EVERY_MS.load(Ordering::SeqCst))
+}
 /// Previous this far into an entry starts it over; earlier it goes to the one before.
 const RESTART_AFTER_MS: u64 = 3_000;
 /// How long a command may wait for the player's thread.
@@ -52,7 +67,21 @@ pub struct QueueState {
     pub finished: bool,
     /// Why an entry was skipped or the queue stopped.
     pub problem: Option<Problem>,
+    /// The entries skipped since the queue was set, with why (the newest 100), so a list
+    /// can mark them.
+    pub skipped: Vec<Skipped>,
 }
+
+/// An entry that could not be played.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Skipped {
+    pub key: u64,
+    pub item_id: i64,
+    pub problem: Problem,
+}
+
+/// Skipped entries kept in the state, at most.
+const SKIPPED_KEPT: usize = 100;
 
 /// What the app can ask for.
 #[derive(Debug, Clone, PartialEq)]
@@ -90,7 +119,8 @@ type Listener = Arc<dyn Fn(QueueState) + Send + Sync>;
 enum Message {
     Command(Command, SyncSender<Result<(), Problem>>),
     Engine(PlayerState),
-    Close,
+    /// Saves the last progress, answers, and ends the thread.
+    Close(SyncSender<()>),
 }
 
 struct Shared {
@@ -123,6 +153,7 @@ impl QueuePlayer {
                 playback: player.state(),
                 finished: false,
                 problem: None,
+                skipped: Vec::new(),
             }),
             listener: Mutex::new(None),
         });
@@ -139,6 +170,7 @@ impl QueuePlayer {
             failures: 0,
             finished: false,
             problem: None,
+            skipped: Vec::new(),
         }));
         let received = Arc::new(Mutex::new(received));
         let thread_shared = Arc::clone(&shared);
@@ -154,6 +186,12 @@ impl QueuePlayer {
 
     /// Runs a command on the player's thread and returns how it went.
     pub fn command(&self, command: Command) -> Result<(), Problem> {
+        if ON_QUEUE_THREAD.with(Cell::get) {
+            // The thread would wait for itself: a listener must hand commands elsewhere.
+            return Err(Problem::bug(
+                "a queue command was sent from the queue's own thread (its listener)",
+            ));
+        }
         let (reply, answer) = mpsc::sync_channel(1);
         self.messages
             .send(Message::Command(command, reply))
@@ -180,10 +218,23 @@ impl QueuePlayer {
     }
 }
 
+/// How long dropping a queue waits for its last save.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
+
 impl Drop for QueuePlayer {
+    /// Waits (at most 2 s) until the last progress is saved, so closing the app right after
+    /// loses nothing. Dropped on its own thread (by its listener), it cannot wait.
     fn drop(&mut self) {
-        let _ = self.messages.send(Message::Close);
+        let (done, saved) = mpsc::sync_channel(1);
+        if self.messages.send(Message::Close(done)).is_ok() && !ON_QUEUE_THREAD.with(Cell::get) {
+            let _ = saved.recv_timeout(CLOSE_TIMEOUT);
+        }
     }
+}
+
+thread_local! {
+    /// True on a queue's own thread.
+    static ON_QUEUE_THREAD: Cell<bool> = const { Cell::new(false) };
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -211,16 +262,19 @@ struct Actor {
     failures: usize,
     finished: bool,
     problem: Option<Problem>,
+    skipped: Vec<Skipped>,
 }
 
 /// The player's thread: one message at a time, then the new state goes out.
 fn run(actor: &Mutex<Actor>, received: &Mutex<Receiver<Message>>, shared: &Shared) {
+    ON_QUEUE_THREAD.with(|flag| flag.set(true));
     let received = lock(received);
     while let Ok(message) = received.recv() {
         let mut actor = lock(actor);
         match message {
-            Message::Close => {
+            Message::Close(done) => {
                 actor.save_progress();
+                let _ = done.send(());
                 return;
             }
             Message::Command(command, reply) => {
@@ -278,6 +332,7 @@ impl Actor {
             playback: self.player.state(),
             finished: self.finished,
             problem: self.problem.clone(),
+            skipped: self.skipped.clone(),
         }
     }
 
@@ -304,6 +359,7 @@ impl Actor {
                 self.order.set(&items, start);
                 self.wants_play = autoplay;
                 self.problem = None;
+                self.skipped.clear();
                 self.failures = 0;
                 self.open_current();
                 Ok(())
@@ -429,6 +485,7 @@ impl Actor {
                 self.order.clear();
                 self.finished = false;
                 self.problem = None;
+                self.skipped.clear();
                 Ok(())
             }
         }
@@ -444,12 +501,16 @@ impl Actor {
                 let due = self
                     .playing
                     .as_ref()
-                    .is_some_and(|playing| playing.saved_at.elapsed() >= SAVE_EVERY);
+                    .is_some_and(|playing| playing.saved_at.elapsed() >= save_every());
                 if due {
                     self.save_state(&state);
                 }
             }
-            Status::Paused => self.save_state(&state),
+            Status::Paused => {
+                // Opened (paused): not a failure in a row any more.
+                self.failures = 0;
+                self.save_state(&state);
+            }
             Status::Ended => {
                 self.save_state(&state);
                 self.playing = None;
@@ -461,8 +522,8 @@ impl Actor {
                     .problem
                     .clone()
                     .unwrap_or_else(|| Problem::bug("the player failed without saying why"));
-                self.playing = None;
-                self.skip(problem);
+                let slot = self.playing.take().map(|playing| playing.slot);
+                self.skip(slot, problem);
             }
             Status::Idle | Status::Loading => {}
         }
@@ -473,6 +534,11 @@ impl Actor {
         match self.order.next(ended) {
             Some(_) => self.open_current(),
             None => {
+                // Skipped past the last entry: its file must not play on. (One that
+                // ended is at its end already, paused there.)
+                if !ended {
+                    self.stop_engine();
+                }
                 self.finished = true;
                 self.playing = None;
             }
@@ -480,14 +546,24 @@ impl Actor {
     }
 
     /// An entry could not be played: say why and go on, unless nothing can be played.
-    fn skip(&mut self, problem: Problem) {
-        if self.record_failure(problem) {
+    fn skip(&mut self, slot: Option<Slot>, problem: Problem) {
+        if self.record_failure(slot, problem) {
             self.advance(false);
         }
     }
 
     /// Notes a failed entry. False when everything failed: the queue then stops.
-    fn record_failure(&mut self, problem: Problem) -> bool {
+    fn record_failure(&mut self, slot: Option<Slot>, problem: Problem) -> bool {
+        if let Some(slot) = slot {
+            if self.skipped.len() >= SKIPPED_KEPT {
+                self.skipped.remove(0);
+            }
+            self.skipped.push(Skipped {
+                key: slot.key,
+                item_id: slot.item_id,
+                problem: problem.clone(),
+            });
+        }
         logs::warn("queue", format!("Skipped an entry: {}", problem.text))
             .detail(problem.detail.clone())
             .write();
@@ -524,7 +600,7 @@ impl Actor {
                 Ok(()) => return,
                 Err(problem) => {
                     self.playing = None;
-                    if !self.record_failure(problem) {
+                    if !self.record_failure(Some(slot), problem) {
                         return;
                     }
                     if self.order.next(false).is_none() {

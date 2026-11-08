@@ -613,3 +613,306 @@ fn after_a_command_returns_its_result_is_in_the_state() {
         queue.command(Command::SetRepeat(Repeat::Off)).unwrap();
     }
 }
+
+// --- Edge cases ------------------------------------------------------------------------
+
+#[test]
+fn leaving_an_entry_and_dropping_the_queue_save_where_it_was() {
+    let shelf = shelf("leaving");
+    let first = shelf.item("First", Some("long.m4a"));
+    let second = shelf.item("Second", Some("long.m4a"));
+    let third = shelf.item("Third", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    play(&queue, &[first], 0);
+    wait(&queue, "past 1.5 s", |state| {
+        state.playback.position_ms > 1_500
+    });
+    // A new queue replaces it: the first one's progress is kept.
+    play(&queue, &[second, third], 0);
+    let progress = shelf.library.item(first).unwrap().summary.progress.unwrap();
+    assert!(progress.percent > 0.2, "{progress:?}");
+    wait(&queue, "second past 1.5 s", |state| {
+        current_item(state) == Some(second) && state.playback.position_ms > 1_500
+    });
+    drop(queue);
+    let progress = shelf
+        .library
+        .item(second)
+        .unwrap()
+        .summary
+        .progress
+        .unwrap();
+    assert!(progress.percent > 0.2, "dropping saves too: {progress:?}");
+}
+
+#[test]
+fn progress_is_saved_while_playing_without_pauses() {
+    let shelf = shelf("periodic");
+    let song = shelf.item("Song", Some("long.m4a"));
+    elsewhere::queue::set_save_interval(Duration::from_millis(200));
+    let (queue, _) = queue(&shelf);
+    play(&queue, &[song], 0);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let saved = shelf
+            .library
+            .item(song)
+            .unwrap()
+            .summary
+            .progress
+            .map_or(0.0, |p| p.percent);
+        if saved > 0.2 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never saved while playing");
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(
+        queue.state().playback.status,
+        Status::Playing,
+        "saved without pausing"
+    );
+}
+
+#[test]
+fn skipping_past_the_last_entry_stops_its_sound() {
+    let shelf = shelf("past-the-end");
+    let song = shelf.item("Song", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    play(&queue, &[song], 0);
+    wait(&queue, "playing", |state| {
+        state.playback.status == Status::Playing
+    });
+    queue.command(Command::Next).unwrap();
+    let state = queue.state();
+    assert!(state.finished);
+    thread::sleep(Duration::from_millis(300));
+    assert_ne!(
+        queue.state().playback.status,
+        Status::Playing,
+        "the file does not play on"
+    );
+}
+
+#[test]
+fn groups_books_and_deleted_items_are_skipped() {
+    let shelf = shelf("odd-items");
+    let song = shelf.item("Song", Some("song.m4a"));
+    let album: i64 = shelf
+        .db
+        .query_row(
+            "INSERT INTO item (category_id, library_id, kind, path, title, sort_title)
+             VALUES (?1, ?2, 'group', 'Album', 'Album', 'album') RETURNING id",
+            params![shelf.tab, shelf.library_folder],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let books: i64 = shelf
+        .db
+        .query_row("SELECT id FROM category WHERE name = 'Books'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let book = shelf.item("Book", Some("song.m4a"));
+    shelf
+        .db
+        .execute(
+            "UPDATE item SET category_id = ?2 WHERE id = ?1",
+            params![book, books],
+        )
+        .unwrap();
+    let deleted = shelf.item("Deleted", Some("song.m4a"));
+    shelf
+        .db
+        .execute("DELETE FROM item WHERE id = ?1", [deleted])
+        .unwrap();
+    let (queue, seen) = queue(&shelf);
+    queue.command(Command::SetSpeed(4.0)).unwrap();
+    play(&queue, &[album, book, deleted, song], 0);
+    let end = wait(&queue, "finished", |state| state.finished);
+    assert_eq!(current_item(&end), Some(song), "only the song played");
+    let skipped: Vec<(i64, Kind)> = end
+        .skipped
+        .iter()
+        .map(|skip| (skip.item_id, skip.problem.kind))
+        .collect();
+    assert_eq!(
+        skipped,
+        [
+            (album, Kind::Input),
+            (book, Kind::Input),
+            (deleted, Kind::Unavailable)
+        ],
+        "each skip with its own reason"
+    );
+    let _ = &seen;
+    assert_eq!(shelf.plays(song), 1);
+}
+
+#[test]
+fn an_item_deleted_while_it_plays_does_not_stop_the_queue() {
+    let shelf = shelf("deleted-playing");
+    let first = shelf.item("First", Some("song.m4a"));
+    let second = shelf.item("Second", Some("song.opus"));
+    let (queue, _) = queue(&shelf);
+    play(&queue, &[first, second], 0);
+    wait(&queue, "first playing", |state| {
+        state.playback.status == Status::Playing
+    });
+    shelf
+        .db
+        .execute("DELETE FROM item WHERE id = ?1", [first])
+        .unwrap();
+    queue.command(Command::SetSpeed(4.0)).unwrap();
+    let end = wait(&queue, "finished", |state| state.finished);
+    assert_eq!(current_item(&end), Some(second));
+    assert_eq!(shelf.plays(second), 1);
+}
+
+#[test]
+fn repeat_all_over_only_broken_entries_stops_instead_of_spinning() {
+    let shelf = shelf("repeat-broken");
+    let items = [
+        shelf.broken("Bad"),
+        shelf.item("Gone", None),
+        shelf.broken("Worse"),
+    ];
+    let (queue, _) = queue(&shelf);
+    queue.command(Command::SetRepeat(Repeat::All)).unwrap();
+    play(&queue, &items, 0);
+    let end = wait(&queue, "stopped", |state| state.finished);
+    assert!(
+        end.problem
+            .unwrap()
+            .text
+            .starts_with("Nothing in this queue")
+    );
+    thread::sleep(Duration::from_millis(300));
+    assert!(queue.state().finished, "and it stays stopped");
+    // Repeat one over a single broken entry: the same.
+    queue.command(Command::SetRepeat(Repeat::One)).unwrap();
+    play(&queue, &[items[0]], 0);
+    assert!(
+        wait(&queue, "stopped again", |state| state.finished)
+            .problem
+            .is_some()
+    );
+}
+
+#[test]
+fn a_paused_queue_skips_broken_entries_without_giving_up_too_early() {
+    let shelf = shelf("paused-broken");
+    let bad = shelf.broken("Bad");
+    let good = shelf.item("Good", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    queue.command(Command::SetRepeat(Repeat::All)).unwrap();
+    queue
+        .command(Command::Play {
+            items: vec![bad, good],
+            start: 0,
+            autoplay: false,
+        })
+        .unwrap();
+    wait(&queue, "paused on the good one", |state| {
+        current_item(state) == Some(good) && state.playback.status == Status::Paused
+    });
+    // Next goes round to the broken one, skips it, and lands on the good one again: the
+    // good one opening (paused) counts, so this is not "nothing can be played".
+    queue.command(Command::Next).unwrap();
+    let state = wait(&queue, "paused on the good one again", |state| {
+        current_item(state) == Some(good) && state.playback.status == Status::Paused
+    });
+    assert!(!state.finished, "{state:?}");
+}
+
+#[test]
+fn removing_another_entry_does_not_restart_what_plays() {
+    let shelf = shelf("remove-other");
+    let a = shelf.item("A", Some("long.m4a"));
+    let b = shelf.item("B", Some("long.m4a"));
+    let c = shelf.item("C", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    play(&queue, &[a, b, c], 1);
+    let before = wait(&queue, "B past 1 s", |state| {
+        state.playback.position_ms > 1_000
+    });
+    let first = before.entries[0].key;
+    let last = before.entries[2].key;
+    queue.command(Command::Remove(first)).unwrap();
+    queue.command(Command::Remove(last)).unwrap();
+    let after = queue.state();
+    assert_eq!(current_item(&after), Some(b));
+    assert!(
+        after.playback.position_ms >= before.playback.position_ms,
+        "not started over"
+    );
+    assert_eq!(after.entries.len(), 1);
+}
+
+#[test]
+fn a_listener_that_sends_commands_gets_an_answer_at_once() {
+    let shelf = shelf("listener-commands");
+    let song = shelf.item("Song", Some("song.m4a"));
+    let queue = Arc::new(QueuePlayer::new(shelf.library).unwrap());
+    let answers = Arc::new(Mutex::new(Vec::new()));
+    let (inner, sink) = (Arc::downgrade(&queue), Arc::clone(&answers));
+    queue.set_listener(move |_| {
+        if let Some(queue) = inner.upgrade() {
+            let started = Instant::now();
+            let result = queue.command(Command::SetRepeat(Repeat::Off));
+            sink.lock()
+                .unwrap()
+                .push((result.is_err(), started.elapsed()));
+        }
+    });
+    play(&queue, &[song], 0);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while answers.lock().unwrap().len() < 2 {
+        assert!(Instant::now() < deadline);
+        thread::sleep(Duration::from_millis(10));
+    }
+    // From inside the listener: refused at once, never a 30 s wait for itself.
+    for (refused, took) in answers.lock().unwrap().iter().skip(1) {
+        assert!(*refused);
+        assert!(*took < Duration::from_millis(100), "{took:?}");
+    }
+}
+
+#[test]
+fn a_panicking_listener_does_not_stop_the_queue() {
+    let shelf = shelf("bad-listener");
+    let items = [
+        shelf.item("One", Some("song.m4a")),
+        shelf.item("Two", Some("song.opus")),
+    ];
+    let queue = QueuePlayer::new(shelf.library).unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&calls);
+    queue.set_listener(move |_| {
+        if counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) % 2 == 1 {
+            panic!("listener bug");
+        }
+    });
+    queue.command(Command::SetSpeed(4.0)).unwrap();
+    play(&queue, &items, 0);
+    wait(&queue, "finished", |state| state.finished);
+    assert_eq!((shelf.plays(items[0]), shelf.plays(items[1])), (1, 1));
+}
+
+#[test]
+fn seeking_while_a_file_opens_answers_and_changes_nothing() {
+    let shelf = shelf("seek-loading");
+    let song = shelf.item("Song", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    play(&queue, &[song], 0);
+    // Right after Play the file may still be opening: either a seek works or it is
+    // refused, never a hang or a broken queue.
+    let _ = queue.command(Command::Seek(2_000));
+    wait(&queue, "playing", |state| {
+        state.playback.status == Status::Playing
+    });
+    queue.command(Command::Seek(4_000)).unwrap();
+    wait(&queue, "past 4 s", |state| {
+        state.playback.position_ms >= 3_900
+    });
+}
