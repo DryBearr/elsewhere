@@ -131,6 +131,11 @@ Tests: `src/player/machine.rs` covers the rules without libmpv; `tests/player.rs
 - one folder per playlist, `<media>/<Music|Videos>/<title> [<id>]/`, with the banner as `cover.jpg` and, per item, the media file, its image and its lyrics (`.lrc` synced, `.txt` plain, from lrclib.net when `lyrics` is on);
 - in the database: one `item` per file (title, artist tags, year, length, description), and the playlist as a `collection` with its cover and order;
 - saving the same link again downloads only the new items; a failing item is reported and the rest go on; `limit` saves only the first N.
+- entries that cannot be saved are known while the playlist is read, and skipped without trying: removed or private videos (`[Deleted video]`, `[Private video]`), members-only and Premium-only ones, premieres not out yet, streams still live. The job says how many and which;
+- a song that left the playlist leaves the saved playlist too, but its file and library entry stay (the job says so); a song still listed but gone from the site keeps the copy saved before;
+- a limit counts only entries that can be saved;
+- `preview_playlist(link)` reads what a link holds before saving: how many entries can be saved (the most a limit can be), which cannot and why, and whether YouTube made the playlist up (a Mix, which can go on and on: a limit of 50 is suggested); it reads at most 1000 entries;
+- a link with nothing that can be saved changes nothing.
 
 YouTube Music links give proper song fields. For plain YouTube music videos the channel is taken as the artist and the title is cleaned to the song name ("Song (Official Video) - Artist" becomes "Song").
 

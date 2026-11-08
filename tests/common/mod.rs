@@ -81,6 +81,25 @@ fn page(path: &str) -> Option<(&'static str, String)> {
             playlist("Broken Playlist", &["/Band%20-%20Hit.mp4", "/missing.mp4"])
         }
         "/slow-playlist.html" => playlist("Slow Playlist", &["/slow.mp4", "/Band%20-%20Hit.mp4"]),
+        "/changing-playlist.html" => {
+            let all = [
+                "/Ch%20-%20One.mp4",
+                "/Ch%20-%20Two.mp4",
+                "/Ch%20-%20Three.mp4",
+            ];
+            match CHANGING.load(std::sync::atomic::Ordering::SeqCst) {
+                2 => playlist(
+                    "Changing Playlist",
+                    &["/Ch%20-%20Three.mp4", "/Ch%20-%20One.mp4"],
+                ),
+                _ => playlist("Changing Playlist", &all),
+            }
+        }
+        "/empty-page.html" => Some((
+            "text/html; charset=utf-8",
+            "<html><head><title>Nothing</title></head><body>No media here.</body></html>"
+                .to_owned(),
+        )),
         "/library-playlist.html" => playlist(
             "Library Playlist",
             &["/Lib%20-%20One.mp4", "/Lib%20-%20Two.mp4"],
@@ -162,6 +181,12 @@ fn serve(mut stream: TcpStream) {
         *count += 1;
         *count
     };
+    // Version 3 of the changing playlist: "Two" is still listed, but gone from the site.
+    if path == "/Ch%20-%20Two.mp4" && CHANGING.load(std::sync::atomic::Ordering::SeqCst) == 3 {
+        let _ = stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return;
+    }
     if path == "/down.mp4" || (path.starts_with("/flaky-") && path.ends_with(".mp4") && count <= 22)
     {
         let _ = stream.write_all(
@@ -234,6 +259,14 @@ fn serve(mut stream: TcpStream) {
     } else {
         let _ = stream.write_all(part);
     }
+}
+
+/// Which version `/changing-playlist.html` serves: 1 One, Two, Three; 2 Three, One (Two
+/// left the playlist); 3 One, Two, Three again, but Two's file is gone from the site.
+static CHANGING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+pub fn set_changing_playlist(version: usize) {
+    CHANGING.store(version, std::sync::atomic::Ordering::SeqCst);
 }
 
 static HITS: Mutex<Option<std::collections::HashMap<String, usize>>> = Mutex::new(None);
