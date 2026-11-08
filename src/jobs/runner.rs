@@ -64,13 +64,17 @@ pub(super) struct Faults {
     pub fail_saves: AtomicUsize,
 }
 
+/// Counts one down; false when it is already 0.
 #[cfg(test)]
 fn take(counter: &AtomicUsize) -> bool {
-    counter
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
-            left.checked_sub(1)
-        })
-        .is_ok()
+    let mut left = counter.load(Ordering::SeqCst);
+    while left > 0 {
+        match counter.compare_exchange(left, left - 1, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return true,
+            Err(now) => left = now,
+        }
+    }
+    false
 }
 
 #[derive(Default)]
