@@ -32,9 +32,14 @@ use crate::ytdlp::{self, Cancel, Event};
 pub enum Format {
     /// m4a: YouTube's own AAC audio, no conversion. Goes to the Music tab.
     Audio,
-    /// mp4. With ffmpeg (desktop, Android) the best quality, merged; without it (iOS) the
-    /// best single-file mp4, often 360p. Goes to the Videos tab.
-    Video,
+    /// mp4, at most `max_height` pixels tall (2160, 1440, 1080, 720, 480, 360, 240, 144);
+    /// None for the best there is. When a video has no such size, the closest one is taken.
+    /// Goes to the Videos tab.
+    ///
+    /// Picking the quality needs ffmpeg (desktop, Android), because YouTube serves HD video
+    /// and audio separately. Without it (iOS) only single-file videos exist, usually 360p.
+    /// Items saved before keep the quality they were saved with.
+    Video { max_height: Option<u32> },
 }
 
 #[derive(Debug, Clone)]
@@ -167,7 +172,7 @@ where
 
     let category = match options.format {
         Format::Audio => "Music",
-        Format::Video => "Videos",
+        Format::Video { .. } => "Videos",
     };
     let root = media.join(category);
     let folder = root.join(folder_name(&listing.title, &listing.id));
@@ -192,6 +197,7 @@ where
     )?;
 
     let format_args = format_args(options.format, has_program("ffmpeg"));
+    let format_args: Vec<&str> = format_args.iter().map(String::as_str).collect();
     let mut items = Vec::new();
     let mut failed = Vec::new();
     for (index, entry) in listing.entries.iter().enumerate() {
@@ -368,18 +374,20 @@ fn save_cover(url: &str, folder: &Path, cancel: &Cancel) -> Option<PathBuf> {
     sibling(&folder.join("cover"), IMAGES)
 }
 
-fn format_args(format: Format, ffmpeg: bool) -> Vec<&'static str> {
-    match (format, ffmpeg) {
-        (Format::Audio, _) => vec!["-f", "ba[ext=m4a]/ba"],
-        // H.264 + AAC in mp4 plays on every phone; merging needs ffmpeg.
-        (Format::Video, true) => vec![
-            "-f",
-            "bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
-            "--merge-output-format",
-            "mp4",
-        ],
-        (Format::Video, false) => vec!["-f", "b[ext=mp4]/b"],
+fn format_args(format: Format, ffmpeg: bool) -> Vec<String> {
+    let Format::Video { max_height } = format else {
+        return ["-f", "ba[ext=m4a]/ba"].map(String::from).to_vec();
+    };
+    // yt-dlp's format sorting: the largest video up to max_height (or the closest, when
+    // none is that small), then H.264 video and AAC audio in mp4, which play on every phone.
+    let size = max_height.map_or("res".to_owned(), |height| format!("res:{height}"));
+    let sort = format!("{size},vcodec:h264,acodec:aac,ext:mp4:m4a");
+    let select = if ffmpeg { "bv*+ba/b" } else { "b" };
+    let mut args = vec!["-f".to_owned(), select.to_owned(), "-S".to_owned(), sort];
+    if ffmpeg {
+        args.extend(["--merge-output-format".to_owned(), "mp4".to_owned()]);
     }
+    args
 }
 
 /// What one item's download produced, before it goes into the database.
@@ -853,6 +861,25 @@ mod tests {
         assert_eq!(folder_name("  ...  ", ""), "Untitled");
         assert_eq!(folder_name("ok", "../x"), "ok [x]");
         assert_eq!(folder_name(&"a".repeat(200), "id").chars().count(), 85);
+    }
+
+    #[test]
+    fn video_quality_becomes_format_sorting() {
+        let args = |format, ffmpeg| format_args(format, ffmpeg).join(" ");
+        assert_eq!(
+            args(
+                Format::Video {
+                    max_height: Some(720)
+                },
+                true
+            ),
+            "-f bv*+ba/b -S res:720,vcodec:h264,acodec:aac,ext:mp4:m4a --merge-output-format mp4"
+        );
+        assert_eq!(
+            args(Format::Video { max_height: None }, false),
+            "-f b -S res,vcodec:h264,acodec:aac,ext:mp4:m4a"
+        );
+        assert_eq!(args(Format::Audio, true), "-f ba[ext=m4a]/ba");
     }
 
     #[test]

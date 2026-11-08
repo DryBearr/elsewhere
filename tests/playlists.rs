@@ -25,7 +25,9 @@ fn setup() {
 fn options() -> Options {
     // Video: the test media are plain mp4 files, which have no separate audio stream.
     Options {
-        format: Format::Video,
+        format: Format::Video {
+            max_height: Some(720),
+        },
         lyrics: true,
         limit: None,
     }
@@ -291,4 +293,32 @@ fn real_youtube_music_playlist() {
         saved.items.iter().all(|item| item.image.is_some()),
         "every item's image"
     );
+}
+
+#[test]
+#[ignore = "reaches youtube.com"]
+fn real_youtube_video_quality() {
+    setup();
+    let dir = folder("youtube-quality");
+    let options = Options {
+        format: Format::Video {
+            max_height: Some(480),
+        },
+        lyrics: false,
+        limit: Some(1),
+    };
+    let link = "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI";
+    let saved = playlists::save(
+        &dir.join("library.db"),
+        &dir,
+        link,
+        &options,
+        |_| {},
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(saved.items.len(), 1, "{:?}", saved.failed);
+    let file = &saved.items[0].file;
+    assert_eq!(file.extension().unwrap(), "mp4");
+    println!("{}", file.display());
 }

@@ -51,7 +51,7 @@ Phones: both carry their own Python (the official CPython 3.15 builds from pytho
 
 ## Playlists module
 
-`playlists::save(db, media, link, options, on_progress, cancel)` saves a YouTube or YouTube Music playlist (or one video) into the library, as m4a audio (Music tab) or mp4 video (Videos tab):
+`playlists::save(db, media, link, options, on_progress, cancel)` saves a YouTube or YouTube Music playlist (or one video) into the library, as m4a audio (Music tab) or mp4 video (Videos tab) up to a chosen height (`Format::Video { max_height: Some(720) }`; `None` for the best):
 
 - one folder per playlist, `<media>/<Music|Videos>/<title> [<id>]/`, with the banner as `cover.jpg` and, per item, the media file, its image and its lyrics (`.lrc` synced, `.txt` plain, from lrclib.net when `lyrics` is on);
 - in the database: one `item` per file (title, artist tags, year, length, description), and the playlist as a `collection` with its cover and order;
