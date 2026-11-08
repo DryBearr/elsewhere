@@ -773,7 +773,7 @@ impl Inner {
                 (stall.min(grace) / 4).clamp(Duration::from_millis(10), Duration::from_secs(1));
             thread::sleep(tick);
             let mut to_interrupt = Vec::new();
-            let mut stuck = Vec::new();
+            let mut stuck = false;
             {
                 let mut table = self.lock();
                 if table.shut_down {
@@ -802,21 +802,24 @@ impl Inner {
                                 entry.state.id,
                                 duration_text(stall + grace)
                             ));
-                            stuck.push(problem.detail.clone());
+                            // Broken first: whoever sees the failed job (the app checks
+                            // health after a Bug) must already see the restart need.
+                            health::broken(
+                                &format!("{}-workers", self.name),
+                                problem.detail.clone(),
+                            );
+                            stuck = true;
                             finish(entry, Err(problem));
                         }
                         _ => {}
                     }
                 }
-                if !to_interrupt.is_empty() || !stuck.is_empty() {
+                if !to_interrupt.is_empty() || stuck {
                     self.changed.notify_all();
                 }
             }
             for interrupt in to_interrupt {
                 interrupt();
-            }
-            if let Some(reason) = stuck.into_iter().next() {
-                health::broken(&format!("{}-workers", self.name), reason);
             }
         }
     }
