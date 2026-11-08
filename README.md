@@ -92,12 +92,13 @@ Tests break things on purpose: delivery crashes, failing saves, a stuck and a st
 
 ## Library module
 
-`library` reads the media library (step 1 of several: browsing, marks, editing, change notices, search and folder scans come next). The apps get `categories()`, `collections(tab)`, `collection(id)`, `collection_items(id, after, limit)`, `item(id)` and `item_file(id)`.
+`library` is the media library, built in steps (done: reading, and what the person marks; next: browsing, editing, change notices, search, folder scans). The apps get `categories()`, `collections(tab)`, `collection(id)`, `collection_items(id, after, limit)`, `item(id)` and `item_file(id)`, and the marks below.
 
 - **Ids, never paths:** the apps hold item ids; `item_file` is the only way to a file, and it checks that the file exists, is a regular file and lies inside its library folder and the media folder (links resolved).
 - **Bad data never fails a list:** a deleted file or cover, missing fields or odd values in `extra` leave the row in place, marked `missing` or without a cover.
 - **Pages:** playlists come 100 entries at a time (at most 500), ordered by position and entry id, with an opaque cursor: rows added or removed meanwhile never repeat or vanish among the rest. Each row carries its progress (position, percent, done, plays).
 - **One connection, healed:** reused for every call, reopened once when it breaks.
+- **What the person marks (step 3):** `start_play(item)` says where to start and begins a play; `save_progress(item, position, duration)` keeps the resume point; `set_watched`, `set_favorite`, `set_rating`. The rules: songs (audio under 20 minutes) and clips (video under 5 minutes) always start over; longer things resume, but only from 30 s on; done at 95 %, or in the last 2 minutes of items 10 minutes and longer, and a done item starts over; a play counts once, however often the end is reached by seeking; the player's length corrects the stored one; a save for an item that is gone does nothing.
 - **Moved folders:** iOS gives an updated app a new container path (and Android can move an app to other storage). A stored path that is gone but runs through a folder named like the media folder is found again inside today's media folder.
 
 ## Player module

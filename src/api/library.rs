@@ -1,6 +1,7 @@
-//! The media library (src/library), read side: tabs, playlists, their items a page at a
-//! time, one item's details, and the checked file to play. The apps hold ids; paths only
-//! come from `item_file`.
+//! The media library (src/library): tabs, playlists, their items a page at a time, one
+//! item's details, the checked file to play, and what the person marks: where they
+//! stopped, what they finished, favorites and ratings. The apps hold ids; paths only come
+//! from `item_file`.
 
 use super::{ApiError, core};
 use crate::library;
@@ -219,6 +220,55 @@ pub fn item_file(id: i64) -> Result<String, ApiError> {
         .item_file(id)?
         .to_string_lossy()
         .into_owned())
+}
+
+/// Where to start an item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
+pub struct PlayStart {
+    pub position_ms: i64,
+    /// True when that is a resume point ("Resuming at 12:34").
+    pub resumed: bool,
+}
+
+/// Begins playing an item: where to start (songs and clips from 0, longer things from
+/// their resume point), and a new play that counts once when it finishes.
+#[uniffi::export]
+pub fn start_play(item_id: i64) -> Result<PlayStart, ApiError> {
+    let start = core()?.library.start_play(item_id)?;
+    Ok(PlayStart {
+        position_ms: start.position_ms,
+        resumed: start.resumed,
+    })
+}
+
+/// Saves where playback of an item is; `duration_ms` as the player knows it. Call it on
+/// pause, every few seconds and at the end. False when the item is gone (nothing to save).
+#[uniffi::export]
+pub fn save_progress(
+    item_id: i64,
+    position_ms: i64,
+    duration_ms: Option<i64>,
+) -> Result<bool, ApiError> {
+    Ok(core()?
+        .library
+        .save_progress(item_id, position_ms, duration_ms)?)
+}
+
+/// Marks an item watched (done: it starts over) or not watched.
+#[uniffi::export]
+pub fn set_watched(item_id: i64, watched: bool) -> Result<(), ApiError> {
+    Ok(core()?.library.set_watched(item_id, watched)?)
+}
+
+#[uniffi::export]
+pub fn set_favorite(item_id: i64, favorite: bool) -> Result<(), ApiError> {
+    Ok(core()?.library.set_favorite(item_id, favorite)?)
+}
+
+/// 1 to 10, or none to clear it.
+#[uniffi::export]
+pub fn set_rating(item_id: i64, rating: Option<i64>) -> Result<(), ApiError> {
+    Ok(core()?.library.set_rating(item_id, rating)?)
 }
 
 fn media(media: library::Media) -> MediaKind {
