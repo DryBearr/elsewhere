@@ -20,7 +20,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 source "$here/mpv_sources.sh"
 root=$(cd "$here/.." && pwd)
 work=$root/target/mpv-ios
-stamp="$(cat "$0" "$here/mpv_sources.sh" | shasum -a 256 | cut -c1-16) $(xcodebuild -version | head -1)"
+stamp="$(cat "$0" "$here/mpv_sources.sh" | shasum -a 256 | cut -c1-16) $(xcodebuild -version 2> /dev/null | tr "\n" " ")"
 jobs=$(sysctl -n hw.ncpu)
 
 # slice <iphoneos|iphonesimulator>: builds mpv.framework for that SDK into $work/<sdk>.
@@ -121,7 +121,7 @@ CROSS
   grep -q "enabled features:.* gpl " "$out/mpv.log" && { echo "mpv was configured as GPL" >&2; exit 1; }
 
   local framework=$out/mpv.framework library
-  library=$(find "$prefix/lib" -name 'libmpv.*.dylib' -type f | head -1)
+  library=$(find "$prefix/lib" -name 'libmpv.*.dylib' -type f -print -quit)
   mkdir -p "$framework"
   cp "$library" "$framework/mpv"
   install_name_tool -id @rpath/mpv.framework/mpv "$framework/mpv"
