@@ -187,6 +187,14 @@ where
     Ok(Done { files, json })
 }
 
+/// Downloads `url` (http or https) as text, with yt-dlp's network stack: the same
+/// certificates, proxy and user agent as downloads. An HTTP error such as 404 is
+/// `Error::YtDlp` with kind "HTTPError". Blocks like [`info`].
+pub fn fetch(url: &str) -> Result<String, Error> {
+    let (_, body) = python::run("fetch", url, &[], |_| {}, &Cancel::new())?;
+    Ok(body.unwrap_or_default())
+}
+
 /// Checks YouTube support on this device: solves one of YouTube's JavaScript challenges
 /// with the built-in engine, the way yt-dlp does while extracting. `kind` is `"n"` or
 /// `"sig"`; `player_url` is a YouTube player script, downloaded once and then cached.

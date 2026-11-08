@@ -1,6 +1,6 @@
 """Bridge between Rust (src/ytdlp/python.rs) and yt-dlp.
 
-Rust calls only setup(), version(), info(), download() and solve_challenge(). Everything yt-dlp prints,
+Rust calls only setup(), version(), info(), download(), fetch() and solve_challenge(). Everything yt-dlp prints,
 logs or reports goes through the `emit` callback, so nothing touches stdout, stderr
 or stdin. Errors leave this module as one of three exceptions: BadArgs, Cancelled
 or Failure.
@@ -165,6 +165,22 @@ def solve_challenge(player_url, args, emit, cancelled):
     if response.error is not None:
         raise Failure(type(response.error).__name__, _clean(str(response.error)))
     return [], response.response.output.results[challenge]
+
+
+def fetch(url, args, emit, cancelled):
+    """GETs `url` with yt-dlp's network stack (certificates, proxy, user agent). args are
+    unused. Returns ([], body as text). HTTP errors become Failure('HTTPError', ...)."""
+    _check(cancelled)
+    try:
+        with yt_dlp.YoutubeDL({'logger': _Logger(emit, cancelled), 'quiet': True}) as ydl:
+            with ydl.urlopen(url) as response:
+                body = response.read()
+    except (BadArgs, Cancelled):
+        raise
+    except Exception as err:
+        _check(cancelled)
+        raise Failure(type(err).__name__, _clean(str(err))) from None
+    return [], body.decode('utf-8', 'replace')
 
 
 def info(url, args, emit, cancelled):

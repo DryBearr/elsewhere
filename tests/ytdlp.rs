@@ -9,62 +9,15 @@
 //! binary runs with YTDLP_TEST_PYTHON_HOME set to the phone Python, which has yt-dlp in
 //! its site-packages. YTDLP_TEST_FFMPEG=1 says ffmpeg is on PATH, so the ffmpeg tests run.
 
+mod common;
+
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use common::{SIZE, SLOW_SIZE, body, folder, ready, recorder, url};
 use elsewhere::ytdlp::{self, Cancel, Error, Event, Level, Setup};
-
-const SIZE: usize = 200_000;
-const SLOW_SIZE: usize = 1_000_000;
-
-fn ready() {
-    let setup = match std::env::var_os("YTDLP_TEST_PYTHON_HOME") {
-        Some(home) => Setup {
-            python_home: Some(PathBuf::from(home)),
-            python_paths: Vec::new(),
-        },
-        None => Setup {
-            python_home: None,
-            python_paths: vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/python")],
-        },
-    };
-    if let Err(err) = ytdlp::init(&setup) {
-        panic!(
-            "yt-dlp did not start ({err}); run: python3 -m pip install --target vendor/python -r scripts/requirements.txt"
-        );
-    }
-}
-
-/// A fresh, empty folder for one test.
-fn folder(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("elsewhere-ytdlp-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn url(path: &str) -> String {
-    format!("{}{path}", server())
-}
-
-/// Collects events; returns the list and a callback that fills it.
-fn recorder() -> (
-    Arc<Mutex<Vec<Event>>>,
-    impl Fn(Event) + Send + Sync + 'static,
-) {
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let sink = events.clone();
-    (events, move |event| sink.lock().unwrap().push(event))
-}
-
-fn body(size: usize) -> Vec<u8> {
-    (0..size).map(|i| (i % 251) as u8).collect()
-}
 
 #[test]
 fn init_returns_version() {
@@ -465,104 +418,4 @@ fn real_site_merge() {
     assert_eq!(done.files.len(), 1, "{:?}", done.files);
     let size = fs::metadata(&done.files[0]).unwrap().len();
     assert!(size > 100_000, "{size} bytes");
-}
-
-/// Base URL of the test server, started on first use.
-///
-/// - `/<name>.mp4`: SIZE bytes, with Range support
-/// - `/slow.mp4`: SLOW_SIZE bytes, sent slowly
-/// - `/broken.mp4`: promises SIZE bytes, sends half, then closes
-/// - `/missing.mp4`: 404
-fn server() -> &'static str {
-    static URL: OnceLock<String> = OnceLock::new();
-    URL.get_or_init(|| {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        thread::spawn(move || {
-            for stream in listener.incoming().flatten() {
-                thread::spawn(move || serve(stream));
-            }
-        });
-        url
-    })
-}
-
-fn serve(mut stream: TcpStream) {
-    let Ok(clone) = stream.try_clone() else {
-        return;
-    };
-    let mut reader = BufReader::new(clone);
-    let mut request = String::new();
-    if reader.read_line(&mut request).is_err() {
-        return;
-    }
-    let mut range: Option<(usize, Option<usize>)> = None;
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
-            break;
-        }
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("range: bytes=") {
-            let (start, end) = value.trim().split_once('-').unwrap_or(("0", ""));
-            range = Some((start.parse().unwrap_or(0), end.parse().ok()));
-        }
-    }
-    let mut parts = request.split_whitespace();
-    let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-
-    let (size, slow, broken) = match path {
-        "/slow.mp4" => (SLOW_SIZE, true, false),
-        "/broken.mp4" => (SIZE, false, true),
-        "/missing.mp4" => (0, false, false),
-        path if path.ends_with(".mp4") => (SIZE, false, false),
-        _ => (0, false, false),
-    };
-    if size == 0 {
-        let _ = stream
-            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
-        return;
-    }
-
-    let data = body(size);
-    let (start, end) = match range {
-        Some((start, end)) => (start, end.unwrap_or(size - 1).min(size - 1)),
-        None => (0, size - 1),
-    };
-    if start >= size {
-        let _ = write!(
-            stream,
-            "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{size}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-        );
-        return;
-    }
-    let part = &data[start..=end];
-    let status = if range.is_some() {
-        "206 Partial Content"
-    } else {
-        "200 OK"
-    };
-    let mut head = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n",
-        part.len()
-    );
-    if range.is_some() {
-        head += &format!("Content-Range: bytes {start}-{end}/{size}\r\n");
-    }
-    head += "\r\n";
-    if stream.write_all(head.as_bytes()).is_err() || method == "HEAD" {
-        return;
-    }
-
-    if broken {
-        let _ = stream.write_all(&part[..part.len() / 2]);
-    } else if slow {
-        for chunk in part.chunks(16 * 1024) {
-            if stream.write_all(chunk).is_err() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(15));
-        }
-    } else {
-        let _ = stream.write_all(part);
-    }
 }

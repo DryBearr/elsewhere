@@ -12,12 +12,16 @@ crate-type = ["rlib"]
 # yt-dlp utility through embedded Python (src/ytdlp), with a built-in JavaScript engine for
 # YouTube (third_party/quickjs). Off by default: without it the core builds with no Python.
 ytdlp = ["dep:pyo3", "dep:cc"]
+# Save YouTube and YouTube Music playlists into the library (src/playlists). Built on ytdlp.
+playlists = ["ytdlp", "dep:serde_json"]
 # The uniffi-bindgen tool, which writes the Kotlin and Swift bindings. Build machines only.
 bindgen = ["uniffi/cli", "uniffi/cargo-metadata"]
 
 [dependencies]
 pyo3 = { version = "0.30", optional = true }
 rusqlite = { version = "0.41", features = ["bundled"] }
+# Reads yt-dlp's info JSON and the lyrics service's answers (playlists feature).
+serde_json = { version = "1", optional = true }
 uniffi = { version = "0.32", default-features = false }
 
 [build-dependencies]
@@ -32,6 +36,10 @@ required-features = ["bindgen"]
 [[test]]
 name = "ytdlp"
 required-features = ["ytdlp"]
+
+[[test]]
+name = "playlists"
+required-features = ["playlists"]
 
 # Smaller phone builds: no debug info in the Rust core.
 [profile.release]
