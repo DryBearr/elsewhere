@@ -1,6 +1,6 @@
 [package]
 name = "elsewhere"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 
 # The shared core of the Android and iOS apps (android/, ios/). They call it through
