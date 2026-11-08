@@ -5,7 +5,10 @@ use rusqlite::Connection;
 
 /// Schema migrations, applied in order. `PRAGMA user_version` stores how many
 /// have run. Never edit a shipped migration: append a new file instead.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_init.sql"),
+    include_str!("../migrations/0002_playlists.sql"),
+];
 
 /// Opens the database, sets connection pragmas and applies pending migrations.
 pub fn open(path: &Path) -> rusqlite::Result<Connection> {
@@ -52,7 +55,7 @@ mod tests {
         let tabs: u32 = db
             .query_row("SELECT count(*) FROM category", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(tabs, 8);
+        assert_eq!(tabs, 9, "eight from 0001, Videos from 0002");
     }
 
     #[test]

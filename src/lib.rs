@@ -8,5 +8,7 @@ pub mod api;
 mod db;
 #[cfg(feature = "ytdlp")]
 mod phone;
+#[cfg(feature = "playlists")]
+pub mod playlists;
 #[cfg(feature = "ytdlp")]
 pub mod ytdlp;

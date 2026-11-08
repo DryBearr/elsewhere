@@ -1,0 +1,294 @@
+//! Tests for src/playlists, fully offline: the local test server (tests/common) serves a
+//! playlist page with two videos and stands in for the lyrics service.
+//! Saving a real YouTube playlist is marked #[ignore]: `cargo test --features playlists -- --ignored`.
+
+mod common;
+
+use std::path::Path;
+use std::sync::{Arc, Mutex, Once};
+
+use common::{folder, ready, url};
+use elsewhere::playlists::{self, Format, Options, Progress};
+use elsewhere::ytdlp::{self, Cancel};
+use rusqlite::Connection;
+
+/// yt-dlp is ready and lyrics come from the test server.
+fn setup() {
+    static LYRICS: Once = Once::new();
+    ready();
+    LYRICS.call_once(|| {
+        // SAFETY: set once, before any test reads it; nothing else here changes the environment.
+        unsafe { std::env::set_var("ELSEWHERE_LRCLIB_URL", common::server()) };
+    });
+}
+
+fn options() -> Options {
+    // Video: the test media are plain mp4 files, which have no separate audio stream.
+    Options {
+        format: Format::Video,
+        lyrics: true,
+        limit: None,
+    }
+}
+
+fn progress() -> (
+    Arc<Mutex<Vec<Progress>>>,
+    impl Fn(Progress) + Send + Sync + 'static,
+) {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    (events, move |event| sink.lock().unwrap().push(event))
+}
+
+fn collection_items(db: &Path, collection_id: i64) -> Vec<(i64, String)> {
+    let db = Connection::open(db).unwrap();
+    let mut stmt = db
+        .prepare(
+            "SELECT item.id, item.title FROM collection_item
+             JOIN item ON item.id = collection_item.item_id
+             WHERE collection_id = ?1 ORDER BY collection_item.position",
+        )
+        .unwrap();
+    stmt.query_map([collection_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+#[test]
+fn saves_a_playlist_with_lyrics_then_only_new_items() {
+    setup();
+    let dir = folder("playlist");
+    let db = dir.join("library.db");
+    let (events, on_progress) = progress();
+
+    let saved = playlists::save(
+        &db,
+        &dir,
+        &url("/playlist.html"),
+        &options(),
+        on_progress,
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(saved.title, "Test Playlist");
+    assert!(saved.failed.is_empty(), "{:?}", saved.failed);
+    assert_eq!(saved.items.len(), 2);
+    assert!(
+        saved.folder.starts_with(dir.join("Videos")),
+        "{}",
+        saved.folder.display()
+    );
+    for (index, item) in saved.items.iter().enumerate() {
+        assert_eq!(item.position, index + 1);
+        assert!(item.file.is_file(), "{}", item.file.display());
+        assert!(
+            item.file
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(&format!("{:03} - ", index + 1))
+        );
+    }
+
+    // Lyrics: synced for "Band - Hit" (.lrc), plain only for "Band - Other" (.txt).
+    let hit = saved.items[0]
+        .lyrics
+        .as_ref()
+        .expect("synced lyrics for Hit");
+    assert_eq!(hit.extension().unwrap(), "lrc");
+    assert!(
+        std::fs::read_to_string(hit)
+            .unwrap()
+            .contains("[00:01.00] la la")
+    );
+    let other = saved.items[1]
+        .lyrics
+        .as_ref()
+        .expect("plain lyrics for Other");
+    assert_eq!(other.extension().unwrap(), "txt");
+
+    // The library: a playlist with both items in order.
+    let collection_id = saved
+        .collection_id
+        .expect("a playlist link makes a playlist");
+    let titles: Vec<String> = collection_items(&db, collection_id)
+        .into_iter()
+        .map(|(_, title)| title)
+        .collect();
+    assert_eq!(titles, ["Band - Hit", "Band - Other"]);
+    {
+        let events = events.lock().unwrap();
+        assert!(
+            matches!(events[0], Progress::Listed { total: 2, .. }),
+            "{events:?}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Progress::Downloading { .. }))
+        );
+    }
+
+    // Again: nothing new to download, same items, same playlist.
+    let (events, on_progress) = progress();
+    let again = playlists::save(
+        &db,
+        &dir,
+        &url("/playlist.html"),
+        &options(),
+        on_progress,
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(again.collection_id, Some(collection_id));
+    let ids: Vec<i64> = again.items.iter().map(|item| item.item_id).collect();
+    assert_eq!(
+        ids,
+        saved
+            .items
+            .iter()
+            .map(|item| item.item_id)
+            .collect::<Vec<_>>()
+    );
+    let events = events.lock().unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event, Progress::Skipped { .. }))
+            .count(),
+        2,
+        "{events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Progress::Downloading { .. }))
+    );
+}
+
+#[test]
+fn a_failing_item_is_reported_and_the_rest_saved() {
+    setup();
+    let dir = folder("broken-playlist");
+    let db = dir.join("library.db");
+    let saved = playlists::save(
+        &db,
+        &dir,
+        &url("/broken-playlist.html"),
+        &options(),
+        |_| {},
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(saved.items.len(), 1);
+    assert_eq!(saved.failed.len(), 1);
+    assert_eq!(saved.failed[0].position, 2);
+    assert!(
+        saved.failed[0].error.contains("404"),
+        "{}",
+        saved.failed[0].error
+    );
+    assert_eq!(collection_items(&db, saved.collection_id.unwrap()).len(), 1);
+}
+
+#[test]
+fn a_single_video_link_saves_one_item_without_a_playlist() {
+    setup();
+    let dir = folder("single");
+    let db = dir.join("library.db");
+    let saved = playlists::save(
+        &db,
+        &dir,
+        &url("/Solo%20Clip.mp4"),
+        &options(),
+        |_| {},
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(saved.collection_id, None);
+    assert_eq!(saved.items.len(), 1);
+    assert_eq!(saved.items[0].title, "Solo Clip");
+    assert!(
+        saved.items[0].lyrics.is_none(),
+        "no artist, so no lyrics search"
+    );
+}
+
+#[test]
+fn limit_saves_only_the_first_items() {
+    setup();
+    let dir = folder("limit");
+    let db = dir.join("library.db");
+    let options = Options {
+        limit: Some(1),
+        ..options()
+    };
+    let saved = playlists::save(
+        &db,
+        &dir,
+        &url("/playlist.html"),
+        &options,
+        |_| {},
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(saved.items.len(), 1);
+    assert_eq!(saved.items[0].title, "Band - Hit");
+}
+
+#[test]
+fn cancelled_before_it_starts() {
+    setup();
+    let dir = folder("cancelled");
+    let cancel = Cancel::new();
+    cancel.cancel();
+    let result = playlists::save(
+        &dir.join("library.db"),
+        &dir,
+        &url("/playlist.html"),
+        &options(),
+        |_| {},
+        &cancel,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(playlists::Error::YtDlp(ytdlp::Error::Cancelled))
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+#[ignore = "reaches youtube.com"]
+fn real_youtube_music_playlist() {
+    setup();
+    // SAFETY: as in setup(); this test runs on its own with --ignored.
+    unsafe { std::env::remove_var("ELSEWHERE_LRCLIB_URL") };
+    let dir = folder("youtube-playlist");
+    let db = dir.join("library.db");
+    let options = Options {
+        format: Format::Audio,
+        lyrics: true,
+        limit: Some(2),
+    };
+    // YouTube's "Popular Music Videos" playlist; only its first two songs.
+    let link = "https://www.youtube.com/playlist?list=PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI";
+    let saved = playlists::save(
+        &db,
+        &dir,
+        link,
+        &options,
+        |event| println!("{event:?}"),
+        &Cancel::new(),
+    )
+    .unwrap();
+    println!("{saved:#?}");
+    assert_eq!(saved.items.len(), 2, "{:?}", saved.failed);
+    assert!(saved.cover.is_some(), "the playlist banner");
+    assert!(
+        saved.items.iter().all(|item| item.image.is_some()),
+        "every item's image"
+    );
+}

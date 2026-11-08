@@ -6,6 +6,7 @@ A Rust core with a native app on each phone:
 src/                Rust core, shared by both apps
   api.rs            everything the apps can call (UniFFI makes the Kotlin and Swift bindings)
   ytdlp/            yt-dlp through embedded Python (feature `ytdlp`)
+  playlists/        save YouTube / YouTube Music playlists into the library (feature `playlists`)
   db.rs             the library database (SQLite)
   phone.rs          what phones need around yt-dlp: unpack Python, link ffmpeg, environment
 android/            Kotlin + Jetpack Compose app (Gradle)
@@ -23,8 +24,8 @@ Desktop (the Rust core and its tests):
 
 ```sh
 python3 -m pip install --target vendor/python -r scripts/requirements.txt   # yt-dlp for development and tests
-cargo test --features ytdlp                  # offline tests against a local test server
-cargo test --features ytdlp -- --ignored     # also tests against real websites
+cargo test --features playlists              # offline tests against a local test server
+cargo test --features playlists -- --ignored # also tests against real websites
 ```
 
 `scripts/requirements.txt` pins yt-dlp. Bump it there to update yt-dlp everywhere. PyO3 links against Homebrew's Python on desktop (see `.cargo/config.toml`); set `PYO3_PYTHON` to use another Python that ships `libpython3.x.so`.
@@ -47,6 +48,16 @@ Phones: both carry their own Python (the official CPython 3.15 builds from pytho
   scripts/ios_rust.sh
   cd ios && xcodegen
   ```
+
+## Playlists module
+
+`playlists::save(db, media, link, options, on_progress, cancel)` saves a YouTube or YouTube Music playlist (or one video) into the library, as m4a audio (Music tab) or mp4 video (Videos tab):
+
+- one folder per playlist, `<media>/<Music|Videos>/<title> [<id>]/`, with the banner as `cover.jpg` and, per item, the media file, its image and its lyrics (`.lrc` synced, `.txt` plain, from lrclib.net when `lyrics` is on);
+- in the database: one `item` per file (title, artist tags, year, length, description), and the playlist as a `collection` with its cover and order;
+- saving the same link again downloads only the new items; a failing item is reported and the rest go on; `limit` saves only the first N.
+
+YouTube Music links give proper song fields. For plain YouTube music videos the channel is taken as the artist and the title is cleaned to the song name ("Song (Official Video) - Artist" becomes "Song").
 
 YouTube: yt-dlp has to solve JavaScript challenges. A QuickJS engine is compiled into the core (`third_party/quickjs`, `src/ytdlp/js.rs`), so this works on every platform without Deno or Node.
 
