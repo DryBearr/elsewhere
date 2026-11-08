@@ -46,6 +46,14 @@ jobs:
       - name: Build ffmpeg for the emulator
         run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_ffmpeg.sh x86_64
 
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv/x86_64
+          key: mpv-x86_64-${{ hashFiles('scripts/android_mpv.sh') }}
+
+      - name: Build libmpv for the emulator
+        run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_mpv.sh x86_64
+
       - name: Build the tests for Android
         run: |
           rustup target add x86_64-linux-android
@@ -55,15 +63,15 @@ jobs:
           export AR_x86_64_linux_android="$bin/llvm-ar"
           export PYO3_PYTHON=python3
           export PYO3_CROSS_LIB_DIR="$PWD/target/android/prefix/lib"
-          cargo test --no-run --features playlists --target x86_64-linux-android --lib --test ytdlp --test playlists --test api --test api_lazy --test recovery \
+          cargo test --no-run --features playlists,player --target x86_64-linux-android --lib --test ytdlp --test playlists --test api --test api_lazy --test recovery --test player \
             --message-format=json > build.json
-          python3 scripts/test_binaries.py build.json elsewhere ytdlp playlists api api_lazy recovery
+          python3 scripts/test_binaries.py build.json elsewhere ytdlp playlists api api_lazy recovery player
           # Runs a test program on the emulator with the phone Python, and ffmpeg on PATH:
           #   run-tests.sh <elsewhere-tests|ytdlp-tests|...> [test arguments]
           cat > run-tests.sh <<'SCRIPT'
           cd /data/local/tmp/elsewhere
           export HOME=$PWD TMPDIR=$PWD/tmp LD_LIBRARY_PATH=$PWD/lib PATH=$PWD/bin:$PATH
-          export YTDLP_TEST_PYTHON_HOME=$PWD/python YTDLP_TEST_FFMPEG=1
+          export YTDLP_TEST_PYTHON_HOME=$PWD/python YTDLP_TEST_FFMPEG=1 PLAYER_TEST_MEDIA=$PWD/media
           tests=$1
           shift
           exec ./$tests "$@"
@@ -89,7 +97,8 @@ jobs:
           arch: x86_64
           target: google_apis
           disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          # With sound: the app's self-test plays through the real sound output.
+          emulator-options: -no-window -gpu swiftshader_indirect -no-boot-anim -no-snapshot
           script: |
             adb shell mkdir -p /data/local/tmp/elsewhere/python /data/local/tmp/elsewhere/lib /data/local/tmp/elsewhere/bin /data/local/tmp/elsewhere/tmp
             adb push target/android/assets/python.tar /data/local/tmp/elsewhere/
@@ -97,10 +106,15 @@ jobs:
             adb push target/android/libs/x86_64/. /data/local/tmp/elsewhere/lib/
             adb push target/android/libs/x86_64/libffmpeg.so /data/local/tmp/elsewhere/bin/ffmpeg
             adb push target/android/libs/x86_64/libffprobe.so /data/local/tmp/elsewhere/bin/ffprobe
-            adb push elsewhere-tests ytdlp-tests playlists-tests api-tests api_lazy-tests recovery-tests run-tests.sh /data/local/tmp/elsewhere/
-            adb shell chmod 755 /data/local/tmp/elsewhere/elsewhere-tests /data/local/tmp/elsewhere/recovery-tests /data/local/tmp/elsewhere/ytdlp-tests /data/local/tmp/elsewhere/playlists-tests /data/local/tmp/elsewhere/api-tests /data/local/tmp/elsewhere/api_lazy-tests /data/local/tmp/elsewhere/bin/ffmpeg /data/local/tmp/elsewhere/bin/ffprobe
+            adb push tests/media /data/local/tmp/elsewhere/
+            adb push elsewhere-tests ytdlp-tests playlists-tests api-tests api_lazy-tests recovery-tests player-tests run-tests.sh /data/local/tmp/elsewhere/
+            adb shell chmod 755 /data/local/tmp/elsewhere/player-tests /data/local/tmp/elsewhere/elsewhere-tests /data/local/tmp/elsewhere/recovery-tests /data/local/tmp/elsewhere/ytdlp-tests /data/local/tmp/elsewhere/playlists-tests /data/local/tmp/elsewhere/api-tests /data/local/tmp/elsewhere/api_lazy-tests /data/local/tmp/elsewhere/bin/ffmpeg /data/local/tmp/elsewhere/bin/ffprobe
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh elsewhere-tests --test-threads=4
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh recovery-tests
+            # The media engine, again and again: timing bugs show up on a slow emulator.
+            for run in 1 2 3; do adb shell sh /data/local/tmp/elsewhere/run-tests.sh player-tests --test-threads=4 || exit 1; done
+            adb shell sh /data/local/tmp/elsewhere/run-tests.sh player-tests --test-threads=1
+            adb shell sh /data/local/tmp/elsewhere/run-tests.sh player-tests --ignored --test-threads=1
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh ytdlp-tests --test-threads=4
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh playlists-tests --test-threads=4
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh api-tests --test-threads=4

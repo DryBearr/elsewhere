@@ -20,6 +20,10 @@ object Core {
     /** Where screens run their calls into the core. */
     val io = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
+    /** Where saved media goes; players open files inside it only. */
+    lateinit var media: File
+        private set
+
     /** Why the core did not start, if it did not. */
     var startError: String? = null
         private set
@@ -31,7 +35,7 @@ object Core {
      */
     fun start(context: Context) {
         SelfTest.enabled = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
-        val media = File(context.getExternalFilesDir(null) ?: context.filesDir, "media")
+        media = File(context.getExternalFilesDir(null) ?: context.filesDir, "media")
         val folders = Folders(
             data = context.filesDir.path,
             cache = context.cacheDir.path,

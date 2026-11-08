@@ -81,6 +81,14 @@ jobs:
       - name: Build ffmpeg for Android
         run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_ffmpeg.sh aarch64
 
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv/aarch64
+          key: mpv-aarch64-${{ hashFiles('scripts/android_mpv.sh') }}
+
+      - name: Build libmpv for Android
+        run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_mpv.sh aarch64
+
       - name: Build the Rust core for Android
         run: ANDROID_NDK_ROOT="$ANDROID_NDK_LATEST_HOME" scripts/android_rust.sh aarch64 release
 

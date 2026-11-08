@@ -1,6 +1,7 @@
 //! Tests for src/player with the real libmpv, without a window or sound (null outputs: video
 //! is still decoded). The media in tests/media are 2 s long and tiny. On a desktop without
 //! a system libmpv, point ELSEWHERE_LIBMPV at one (for example Homebrew's libmpv.so.2).
+//! On an emulator or simulator, PLAYER_TEST_MEDIA names the copy of tests/media.
 
 use std::fs;
 use std::path::PathBuf;
@@ -13,7 +14,9 @@ use elsewhere::player::{self, Player, PlayerState, Status};
 use elsewhere::problem::Kind;
 
 fn media_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/media")
+    std::env::var_os("PLAYER_TEST_MEDIA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/media"))
 }
 
 /// A folder for files made by the tests (broken files, links).
@@ -21,11 +24,21 @@ fn scratch() -> PathBuf {
     std::env::temp_dir().join(format!("elsewhere-player-{}", std::process::id()))
 }
 
+/// A real media file outside the allowed folders.
+fn outside() -> PathBuf {
+    std::env::temp_dir()
+        .join(format!("elsewhere-outside-{}", std::process::id()))
+        .join("secret.mp4")
+}
+
 fn setup() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         let _ = fs::remove_dir_all(scratch());
         fs::create_dir_all(scratch()).unwrap();
+        let secret = outside();
+        fs::create_dir_all(secret.parent().unwrap()).unwrap();
+        fs::copy(media_dir().join("clip.mp4"), &secret).unwrap();
         player::set_null_output(true);
         player::allow_folders(&[media_dir(), scratch()]);
     });
@@ -207,23 +220,31 @@ fn speed_and_volume_stay_in_range() {
 #[test]
 fn only_local_files_in_the_allowed_folders_open() {
     let (player, _seen) = new_player();
-    let outside = scratch().join("outside-link.mp4");
-    let _ = fs::remove_file(&outside);
-    std::os::unix::fs::symlink("/etc/hostname", &outside).unwrap();
+    let link_out = scratch().join("outside-link.mp4");
+    let _ = fs::remove_file(&link_out);
+    std::os::unix::fs::symlink(outside(), &link_out).unwrap();
+    let secret = outside();
+    let dir_name = secret
+        .parent()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap();
     let inside = scratch().join("inside-link.mp4");
     let _ = fs::remove_file(&inside);
     std::os::unix::fs::symlink(media_dir().join("clip.mp4"), &inside).unwrap();
 
     for (path, kind) in [
         ("https://example.com/video.mp4".to_owned(), Kind::Input),
-        ("file:///etc/hostname".to_owned(), Kind::Input),
+        (format!("file://{}", secret.display()), Kind::Input),
         ("clip.mp4".to_owned(), Kind::Input),
-        ("/etc/hostname".to_owned(), Kind::Input),
+        (secret.to_str().unwrap().to_owned(), Kind::Input),
         (
-            format!("{}/../../Cargo.toml", media_dir().display()),
+            format!("{}/../{dir_name}/secret.mp4", scratch().display()),
             Kind::Input,
         ),
-        (outside.to_str().unwrap().to_owned(), Kind::Input),
+        (link_out.to_str().unwrap().to_owned(), Kind::Input),
         (media_dir().to_str().unwrap().to_owned(), Kind::Input),
         (media("missing.mp4"), Kind::Unavailable),
     ] {
@@ -387,6 +408,7 @@ fn players_come_and_go_quickly_and_a_bad_listener_breaks_nothing() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 #[ignore = "counts the process's threads, so it must run alone: --ignored --test-threads=1"]
 fn dropped_players_leave_no_threads_behind() {
     setup();

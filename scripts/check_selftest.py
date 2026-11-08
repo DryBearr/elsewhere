@@ -5,6 +5,8 @@
     ElsewhereJobs: YTDLP 2026.10.26
     ElsewhereJobs: BROKEN pid=4120
     ElsewhereJobs: RESTARTED pid=4188
+    ElsewhereJobs: PLAYED file=song.m4a status=ENDED pos=2000 dur=2000 problem=null
+    ElsewhereJobs: PLAYER refused=INPUT
 
 Usage (checks are case-insensitive about the status):
 
@@ -13,6 +15,7 @@ Usage (checks are case-insensitive about the status):
     check_selftest.py <log> final <status> [<done> <failed>]
     check_selftest.py <log> ytdlp
     check_selftest.py <log> restarted
+    check_selftest.py <log> player <file>...
     check_selftest.py <log> revisions
 
 Exits 0 when the check holds, 1 when it does not hold (yet; the scripts keep waiting),
@@ -28,6 +31,7 @@ FINISHED = {'done', 'failed', 'cancelled'}
 
 def read(path):
     states, finals, versions, errors, pids = [], [], [], [], {}
+    played, refused = {}, []
     with open(path, errors='replace') as log:
         for line in log:
             if 'ElsewhereJobs' not in line:
@@ -41,9 +45,13 @@ def read(path):
                 versions.append(line.split(' YTDLP ', 1)[1].strip())
             elif ' BROKEN ' in line or ' RESTARTED ' in line:
                 pids['broken' if ' BROKEN ' in line else 'restarted'] = fields.get('pid')
+            elif ' PLAYED ' in line:
+                played[fields.get('file')] = fields
+            elif ' PLAYER refused=' in line:
+                refused.append(fields.get('refused'))
             elif ' ERROR ' in line:
                 errors.append(line.strip())
-    return states, finals, versions, errors, pids
+    return states, finals, versions, errors, pids, played, refused
 
 
 def main():
@@ -51,7 +59,7 @@ def main():
         print(__doc__)
         return 2
     path, check, args = sys.argv[1], sys.argv[2], sys.argv[3:]
-    states, finals, versions, errors, pids = read(path)
+    states, finals, versions, errors, pids, played, refused = read(path)
     if errors:
         print('\n'.join(errors))
         return 3
@@ -75,6 +83,22 @@ def main():
                 return 3
             return 0
         return 1
+    if check == 'player':
+        # Every file played to its end, and a file outside the media folder was refused.
+        for name in args:
+            state = played.get(name)
+            if state and state.get('status', '').lower() != 'ended':
+                print(f'{name} did not play to its end: {state}')
+                return 3
+            # The test files are 2 s long: ending much sooner means nothing really played
+            # (for example the sound output failed and mpv skipped the audio).
+            if state and int(state.get('took', '0')) < 1500:
+                print(f'{name} ended after {state.get("took")} ms, not in real time: {state}')
+                return 3
+        if refused and refused[-1] != 'INPUT':
+            print(f'a file outside the media folder was not refused as input: {refused[-1]}')
+            return 3
+        return 0 if all(name in played for name in args) and refused else 1
     if check == 'restarted':
         # A new process came up after the broken one.
         broken, restarted = pids.get('broken'), pids.get('restarted')

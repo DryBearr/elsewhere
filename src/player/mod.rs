@@ -189,6 +189,16 @@ fn configure(mpv: &Handle) -> Result<(), Problem> {
         ("hwdec", "auto-safe"),
         ("audio-client-name", "Elsewhere"),
     ];
+    // Android: AudioTrack needs a Java VM handed to FFmpeg; AAudio and OpenSL ES do not.
+    #[cfg(target_os = "android")]
+    if !NULL_OUTPUT.load(Ordering::SeqCst) {
+        mpv.set_option("ao", "aaudio,opensles").map_err(|code| {
+            player_problem(
+                "The player could not start.",
+                format!("option ao: {}", mpv.error_text(code)),
+            )
+        })?;
+    }
     for (name, value) in optional {
         if let Err(code) = mpv.set_option(name, value)
             && code != mpv::OPTION_NOT_FOUND

@@ -56,6 +56,8 @@ android {
         assets.srcDir(generated.resolve("assets"))
         java.srcDir(generated.resolve("kotlin"))
     }
+    // Debug builds carry the player's test files for the self-test (SelfTest.kt).
+    sourceSets["debug"].assets.srcDir(rootDir.resolve("../tests/media"))
 
     // Unpack native libraries onto disk: ffmpeg and ffprobe ship as libffmpeg.so and
     // libffprobe.so and run from there.
