@@ -2,7 +2,7 @@ import Foundation
 
 /// The CI check of the job path through the real app (scripts/selftest_ios.sh). Debug
 /// builds only: every job state the store receives is printed as one line, and the launch
-/// argument `-selftest <mode>` makes the app act at launch: demo, resume (every Interrupted
+/// argument `-selftest <mode>` makes the app act at launch: demo, long-demo, resume (every Interrupted
 /// job), discard (every Interrupted job), ytdlp, or player (plays the test files in the
 /// app's `media` folder through the real engine and sound output).
 enum SelfTest {
@@ -19,7 +19,11 @@ enum SelfTest {
             do {
                 switch mode {
                 case "demo":
-                    _ = try startDemoJob(options: DemoOptions(items: 20, itemMs: 500, failAt: 3, warnAt: 2))
+                    // 20 items of 1.5 s: long enough to be killed halfway on a slow simulator.
+                    _ = try startDemoJob(options: DemoOptions(items: 20, itemMs: 1500, failAt: 3, warnAt: 2))
+                case "long-demo":
+                    // Runs for minutes: it is still running when the app is killed.
+                    _ = try startDemoJob(options: DemoOptions(items: 200, itemMs: 1000, failAt: nil, warnAt: nil))
                 case "resume":
                     for job in try interrupted() { try resumeJob(id: job.id) }
                 case "discard":

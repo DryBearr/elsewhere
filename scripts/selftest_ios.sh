@@ -56,7 +56,7 @@ launch 3-resume resume
 expect 3-resume final done 19 1
 expect 3-resume revisions
 stop
-launch 4-demo demo
+launch 4-demo long-demo
 expect 4-demo running 1
 stop
 launch 5-discard discard

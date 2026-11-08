@@ -25,7 +25,7 @@ import uniffi.elsewhere.ytdlpVersion
  * The CI check of the job path through the real app (scripts/selftest_android.sh). Debug
  * builds only: every job state the store receives is logged as one line (tag
  * ElsewhereJobs), and the intent extra "selftest" makes the app act at launch:
- * demo, resume (every Interrupted job), discard (every Interrupted job), ytdlp, broken
+ * demo, long-demo, resume (every Interrupted job), discard (every Interrupted job), ytdlp, broken
  * (breaks the core on purpose: the app must restart itself, see Health), or player (plays
  * the debug build's test files through the real engine and sound output).
  */
@@ -45,7 +45,10 @@ object SelfTest {
         Core.io.launch {
             try {
                 when (mode) {
-                    "demo" -> startDemoJob(DemoOptions(20u, 500u, 3u, 2u))
+                    // 20 items of 1.5 s: long enough to be killed halfway on a slow emulator.
+                    "demo" -> startDemoJob(DemoOptions(20u, 1500u, 3u, 2u))
+                    // Runs for minutes: it is still running when the app is killed.
+                    "long-demo" -> startDemoJob(DemoOptions(200u, 1000u, null, null))
                     "resume" -> interrupted().forEach { resumeJob(it.id) }
                     "discard" -> interrupted().forEach { discardJob(it.id) }
                     "ytdlp" -> Log.i(TAG, "YTDLP ${ytdlpVersion()}")

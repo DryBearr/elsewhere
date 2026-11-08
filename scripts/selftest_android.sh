@@ -61,7 +61,7 @@ launch resume
 expect 3-resume final done 19 1
 expect 3-resume revisions
 stop
-launch demo
+launch long-demo
 expect 4-demo running 1
 stop
 launch discard
