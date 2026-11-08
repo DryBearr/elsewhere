@@ -24,20 +24,28 @@ jobs:
           echo "LD_LIBRARY_PATH=$pythonLocation/lib" >> "$GITHUB_ENV"
           python -m pip install --target vendor/python -r scripts/requirements.txt
 
+      # The media engine loads libmpv at run time; the tests play files through it.
+      - name: Install libmpv for the player tests
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends libmpv-dev
+
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --check
 
       - name: Lint
-        run: cargo clippy --all-targets --features playlists -- -D warnings
+        run: |
+          cargo clippy --all-targets --features playlists,player -- -D warnings
+          cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --features playlists
+        run: |
+          cargo test --features playlists,player
+          cargo test --features player --test player -- --ignored --test-threads=1
 
       - name: Kotlin and Swift bindings can be generated
         run: |
-          cargo rustc --lib --features ytdlp --crate-type cdylib
+          cargo rustc --lib --features ytdlp,player --crate-type cdylib
           cargo run --features bindgen --bin uniffi-bindgen -- generate --library target/debug/libelsewhere.so \
             --language kotlin --language swift --no-format --out-dir target/bindings
 

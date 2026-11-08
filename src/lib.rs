@@ -19,6 +19,8 @@ pub mod jobs;
 pub mod logs;
 #[cfg(feature = "ytdlp")]
 mod phone;
+#[cfg(feature = "player")]
+pub mod player;
 #[cfg(feature = "playlists")]
 pub mod playlists;
 pub mod problem;

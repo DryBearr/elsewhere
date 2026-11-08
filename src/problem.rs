@@ -70,6 +70,11 @@ impl Problem {
         Problem::new(Kind::Bug, "Something went wrong.", detail)
     }
 
+    /// The same problem, with `retry` set as given.
+    pub fn with_retry(self, retry: bool) -> Problem {
+        Problem { retry, ..self }
+    }
+
     pub fn is_cancelled(&self) -> bool {
         self.kind == Kind::Cancelled
     }
