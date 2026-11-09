@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Changes to the library made from these screens: they run one after the other off the
 /// main thread, and every screen showing the library looks again after each one. Call it
@@ -359,6 +360,9 @@ struct SearchList: View {
                         ForEach(Array(result.items.enumerated()), id: \.offset) { index, item in
                             ItemRow(identifier: "found-\(index)", item: item, context: context) {
                                 playback.play(items: result.items.map(\.id), start: index)
+                                // The keyboard goes, so the player bar shows; the search stays.
+                                UIApplication.shared.sendAction(
+                                    #selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                             }
                         }
                     }
