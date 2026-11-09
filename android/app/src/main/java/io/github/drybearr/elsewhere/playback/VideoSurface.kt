@@ -38,6 +38,7 @@ class VideoView(context: Context) : SurfaceView(context), SurfaceHolder.Callback
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
+        Playback.videoEvents.addLast("surface created ${holder.surfaceFrame}")
         Playback.attachSurface(holder.surface)
     }
 

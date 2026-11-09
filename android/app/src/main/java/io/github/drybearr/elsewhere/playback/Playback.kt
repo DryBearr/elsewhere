@@ -55,6 +55,15 @@ object Playback {
     @Volatile
     private var target = 0L
 
+    /** The last video events, newest last (for the self-test and the UI tests' failures). */
+    val videoEvents = java.util.concurrent.ConcurrentLinkedDeque<String>()
+
+    private fun videoEvent(text: String) {
+        Log.i(TAG, text)
+        videoEvents.addLast(text)
+        while (videoEvents.size > 20) videoEvents.pollFirst()
+    }
+
     /** A Surface waiting for the queue to be made (main thread). */
     private var waitingSurface: Surface? = null
     /** The Surface mpv draws into now (the newest VideoView's). */
@@ -296,12 +305,13 @@ object Playback {
     fun attachSurface(surface: Surface) {
         val number = target
         if (number == 0L) {
+            videoEvent("a video surface waits for the queue")
             waitingSurface = surface
             return
         }
         waitingSurface = null
         shownSurface = if (VideoSurface.attach(number, surface)) surface else null
-        Log.i(TAG, if (shownSurface == null) "the video surface was not taken" else "video surface attached to $number")
+        videoEvent(if (shownSurface == null) "the video surface was not taken by $number" else "video surface attached to $number")
     }
 
     fun resizeSurface(surface: Surface, width: Int, height: Int) {
@@ -317,7 +327,7 @@ object Playback {
         if (shownSurface === surface) {
             shownSurface = null
             VideoSurface.detach(target)
-            Log.i(TAG, "video surface detached")
+            videoEvent("video surface detached")
         }
     }
 

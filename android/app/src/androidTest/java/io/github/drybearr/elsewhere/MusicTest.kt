@@ -330,7 +330,10 @@ class MusicTest {
         while (true) {
             val state = Playback.state.value
             if (state != null && check(state)) return
-            assertTrue("never $what: $state\ncore log:\n${coreLog()}", System.currentTimeMillis() < deadline)
+            assertTrue(
+                "never $what: $state\nvideo: ${Playback.videoEvents.toList()}\ncore log:\n${coreLog()}",
+                System.currentTimeMillis() < deadline,
+            )
             Thread.sleep(20)
         }
     }

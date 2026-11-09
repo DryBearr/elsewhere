@@ -179,10 +179,12 @@ impl Video {
             .set_string("vo", "gpu")
             .map_err(|code| mpv_problem("the video output", code, &inner))?;
         slot.attached = Attached::Surface;
-        inner
+        let on = inner
             .mpv
             .set_string("vid", "auto")
-            .map_err(|code| mpv_problem("turning video on", code, &inner))
+            .map_err(|code| mpv_problem("turning video on", code, &inner));
+        crate::logs::info("player", format!("{}: video on, into a surface", inner.name)).write();
+        on
     }
 
     /// The Android Surface's size changed (rotation, split screen).
