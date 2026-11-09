@@ -100,6 +100,14 @@ pub fn allow_folders(folders: &[PathBuf]) {
         .collect();
 }
 
+/// Waits until every dropped player has freed mpv (it does that on its own thread after
+/// the drop), at most `timeout`; true if all have. For a process about to end: Android's
+/// decoders must not be freed while the process's own clean-up runs (a test binary
+/// crashes then).
+pub fn wait_for_dropped_players(timeout: std::time::Duration) -> bool {
+    mpv::wait_closed(timeout)
+}
+
 /// Players made after this have no window and no sound; video is still decoded. For
 /// tests and machines without outputs.
 pub fn set_null_output(on: bool) {
@@ -457,6 +465,7 @@ impl Drop for Player {
     /// Ends the event thread, which frees mpv as it goes.
     fn drop(&mut self) {
         self.inner.closing.store(true, Ordering::SeqCst);
+        self.inner.mpv.closing();
         self.inner.mpv.wakeup();
     }
 }

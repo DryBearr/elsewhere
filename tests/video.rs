@@ -22,14 +22,38 @@ fn media(name: &str) -> String {
     media_dir().join(name).to_str().unwrap().to_owned()
 }
 
-fn new_player() -> Player {
+fn new_player() -> TestPlayer {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
         player::set_null_output(true);
         player::set_frames_output(true);
         player::allow_folders(&[media_dir()]);
     });
-    Player::new().expect("libmpv loads (set ELSEWHERE_LIBMPV if it is not installed)")
+    TestPlayer(Some(Player::new().expect(
+        "libmpv loads (set ELSEWHERE_LIBMPV if it is not installed)",
+    )))
+}
+
+/// A test's player. Dropped, it waits until mpv is freed: the test binary must not end
+/// while hardware decoders are being freed (Android's crash in the process's clean-up).
+struct TestPlayer(Option<Player>);
+
+impl std::ops::Deref for TestPlayer {
+    type Target = Player;
+
+    fn deref(&self) -> &Player {
+        self.0.as_ref().expect("the player is there until the drop")
+    }
+}
+
+impl Drop for TestPlayer {
+    fn drop(&mut self) {
+        drop(self.0.take());
+        let freed = player::wait_for_dropped_players(Duration::from_secs(10));
+        if !freed && !thread::panicking() {
+            panic!("a dropped player did not free mpv within 10 s");
+        }
+    }
 }
 
 fn wait(player: &Player, what: &str, check: impl Fn(&PlayerState) -> bool) -> PlayerState {
@@ -258,9 +282,13 @@ fn attaching_and_detaching_again_and_again_while_drawing() {
     assert!(end.problem.is_none());
 }
 
-/// The hardware decoder each platform must use for H.264 (none: the CPU is fine).
+/// The hardware decoder each platform must use for H.264 (none: the CPU is fine). The iOS
+/// simulator has VideoToolbox only where its Mac lends it a GPU (CI machines do not), so
+/// there the CPU is fine too; the Android emulator always has its own codecs.
 fn expected_decoder() -> Option<&'static str> {
-    if cfg!(target_os = "ios") {
+    let simulator =
+        cfg!(target_abi = "sim") || cfg!(all(target_os = "ios", target_arch = "x86_64"));
+    if cfg!(target_os = "ios") && !simulator {
         Some("videotoolbox")
     } else if cfg!(target_os = "android") {
         Some("mediacodec")
@@ -296,7 +324,7 @@ fn video_is_decoded_in_hardware_where_the_phone_can() {
             "decoded by {:?}, wanted {wanted}",
             state.hardware_decoder
         ),
-        // Desktops and CI machines: whatever they have, or the CPU.
+        // Desktops, simulators and CI machines: whatever they have, or the CPU.
         None => println!("decoded by {:?}", state.hardware_decoder),
     }
     // Seeking while the hardware decodes, then to the end.

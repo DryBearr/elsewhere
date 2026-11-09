@@ -7,7 +7,9 @@
 //! libmpv.2.dylib on macOS).
 
 use std::ffi::{CStr, CString, c_char, c_int, c_ulong, c_void};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use super::machine::{EndReason, Event};
 
@@ -279,6 +281,32 @@ pub(super) enum Waited {
 pub(super) struct Handle {
     api: &'static Api,
     ctx: Ctx,
+    /// Its player is gone and it is being freed (`closing`).
+    closing: AtomicBool,
+}
+
+/// How many handles are being freed: a player frees mpv on its own thread after it is
+/// dropped (`wait_closed`).
+static CLOSING: Mutex<usize> = Mutex::new(0);
+static CLOSED: Condvar = Condvar::new();
+
+/// Waits until no handle is being freed, at most `timeout`; true if none is.
+pub(super) fn wait_closed(timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    let mut closing = CLOSING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    while *closing > 0 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        closing = CLOSED
+            .wait_timeout(closing, left)
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .0;
+    }
+    true
 }
 
 unsafe impl Send for Handle {}
@@ -292,7 +320,21 @@ impl Handle {
         if ctx.is_null() {
             return Err("mpv_create failed".to_owned());
         }
-        Ok(Handle { api, ctx })
+        Ok(Handle {
+            api,
+            ctx,
+            closing: AtomicBool::new(false),
+        })
+    }
+
+    /// Says the handle's player is gone and the handle is about to be freed: until it
+    /// is, `wait_closed` waits for it.
+    pub fn closing(&self) {
+        if !self.closing.swap(true, Ordering::SeqCst) {
+            *CLOSING
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) += 1;
+        }
     }
 
     pub fn error_text(&self, code: c_int) -> String {
@@ -647,6 +689,13 @@ impl Drop for Handle {
     fn drop(&mut self) {
         // SAFETY: the last user of the handle; mpv stops playback and frees it.
         unsafe { (self.api.terminate_destroy)(self.ctx) }
+        if self.closing.load(Ordering::SeqCst) {
+            let mut closing = CLOSING
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *closing = closing.saturating_sub(1);
+            CLOSED.notify_all();
+        }
     }
 }
 
