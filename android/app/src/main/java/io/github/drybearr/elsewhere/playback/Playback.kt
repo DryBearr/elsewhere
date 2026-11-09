@@ -349,6 +349,32 @@ object Playback {
     /** What the engine says about its video, as one line (for the UI tests). */
     fun describeVideo(): String = queue?.describeVideo() ?: "no queue"
 
+    private fun publish(state: QueueState) {
+        val old = shown.value
+        if (old != null && old.revision >= state.revision) return
+        shown.value = state
+        settle()
+        changed()
+    }
+
+    /**
+     * Done playing (the end, or nothing queued): the focus goes back to other apps. Not
+     * while a play is on its way: the queue's first state is empty, and comes after the focus.
+     */
+    private fun settle() {
+        val state = shown.value ?: return
+        if (starting == 0 && !resumeAfterLoss && !state.wantsPlay && (state.finished || (state.entryCount == 0u))) {
+            abandonFocus()
+        }
+    }
+
+    private fun changed() {
+        fetchEntries()
+        listenForNoise(keepsGoing)
+        watchers.forEach { it() }
+        shown.value?.let { SelfTest.onQueue(it) }
+    }
+
     // --- Audio focus -------------------------------------------------------------------------
 
     private val audio by lazy { app.getSystemService(AudioManager::class.java) }
