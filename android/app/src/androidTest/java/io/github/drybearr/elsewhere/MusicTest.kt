@@ -307,13 +307,12 @@ class MusicTest {
                     }
             }
 
-<<<<<<< HEAD
     /** The end of the core's own log (mpv's errors go there): the app is gone after the run. */
     private fun coreLog(): String = runCatching {
         File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "logs/elsewhere.log")
             .readLines().takeLast(40).joinToString("\n")
     }.getOrElse { "(none: $it)" }
-=======
+
     /** Opens the menu with this tag and picks `item`; waits for the menu to close again. */
     private fun menu(tag: String, item: String) {
         ui.onNodeWithTag(tag).performClick()
@@ -322,7 +321,6 @@ class MusicTest {
         ui.waitUntil(10_000) { ui.onAllNodes(hasText(item)).fetchSemanticsNodes().isEmpty() }
         ui.waitForIdle()
     }
->>>>>>> feat/player-screen
 
     /** Waits for the queue's rows to hold; if they never do, says what they show. */
     private fun waitRows(what: String, check: () -> Boolean) {
