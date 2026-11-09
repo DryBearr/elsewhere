@@ -137,7 +137,7 @@ jobs:
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh ytdlp-tests --ignored youtube_challenge --nocapture
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh ytdlp-tests --ignored real_site || echo "::warning::Real YouTube tests failed on the Android emulator (YouTube often blocks CI machines)"
             bash scripts/selftest_android.sh Elsewhere-x86_64.apk
-            adb logcat -c; gradle -p android connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.server=http://10.0.2.2:8765 || { adb logcat -d -s Elsewhere:I ElsewhereJobs:I TestRunner:I AndroidRuntime:E | tail -150; exit 1; }
+            adb logcat -c; gradle -p android connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.server=http://10.0.2.2:8765 || { adb logcat -d -s Elsewhere:I ElsewhereJobs:I TestRunner:I AndroidRuntime:E | tail -150; adb shell run-as io.github.drybearr.elsewhere tail -60 files/logs/elsewhere.log; exit 1; }
 
   ios:
     runs-on: macos-latest

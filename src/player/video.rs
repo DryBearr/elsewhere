@@ -6,7 +6,7 @@
 //! Two ways to attach, one per platform's drawing:
 //! - frames (iOS, and the tests): mpv draws each frame into memory the app hands it
 //!   (`draw`), told by a callback when a new one is ready. Needs `set_frames_output(true)`
-//!   before the player is made (on iOS it is the default).
+//!   before the player is made (the core's start does it on iOS).
 //! - a surface (Android): mpv draws into the app's Surface itself (`attach_surface`, from
 //!   the JNI functions in android.rs).
 
@@ -17,7 +17,7 @@ use super::{Inner, mpv};
 use crate::problem::{Kind, Problem};
 
 /// vo=libmpv: the app draws frames itself (iOS has no other video output).
-static FRAMES_OUTPUT: AtomicBool = AtomicBool::new(cfg!(target_os = "ios"));
+static FRAMES_OUTPUT: AtomicBool = AtomicBool::new(false);
 
 /// Largest frame that can be drawn (8K).
 const MAX_SIDE: u32 = 8192;

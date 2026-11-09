@@ -548,16 +548,20 @@ fn each_queue_has_its_own_video_target_and_frames_need_their_output() {
     let (second, _) = queue();
     let (a, b) = (first.video_target(), second.video_target());
     assert!(a > 0 && b > 0 && a != b, "{a} {b}");
-    // These tests run without the frames output (that is iOS's, and tests/video.rs's):
-    // attaching frames is refused, drawing draws nothing, detaching is fine.
+    // The core's start turns on the frames output on iOS only (Android draws into a
+    // Surface): elsewhere attaching frames is refused. Drawing before any frame came draws
+    // nothing; detaching is fine.
     struct Count;
     impl api::FrameListener for Count {
         fn on_frame(&self) {}
     }
-    assert_eq!(
-        kind_of(&first.attach_frames(Box::new(Count))),
-        Some(ProblemKind::Bug)
-    );
+    let attached = first.attach_frames(Box::new(Count));
+    if cfg!(target_os = "ios") {
+        attached.unwrap();
+        first.detach_video().unwrap();
+    } else {
+        assert_eq!(kind_of(&attached), Some(ProblemKind::Bug));
+    }
     let mut pixels = vec![0u8; 16 * 16 * 4];
     assert!(
         !first

@@ -301,7 +301,7 @@ object Playback {
         }
         waitingSurface = null
         shownSurface = if (VideoSurface.attach(number, surface)) surface else null
-        if (shownSurface == null) Log.w(TAG, "the video surface was not taken")
+        Log.i(TAG, if (shownSurface == null) "the video surface was not taken" else "video surface attached to $number")
     }
 
     fun resizeSurface(surface: Surface, width: Int, height: Int) {
@@ -317,6 +317,7 @@ object Playback {
         if (shownSurface === surface) {
             shownSurface = null
             VideoSurface.detach(target)
+            Log.i(TAG, "video surface detached")
         }
     }
 
