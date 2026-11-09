@@ -506,10 +506,12 @@ impl Inner {
                     Waited::Log(level, line) => self.log(&level, line),
                     Waited::FileLoaded => {
                         let (has_video, has_audio, video_size) = self.tracks();
+                        let duration = self.mpv.get_double("duration");
                         self.machine().apply(Event::FileLoaded {
                             has_video,
                             has_audio,
                             video_size,
+                            duration,
                         });
                     }
                     Waited::Event(event) => self.machine().apply(event),

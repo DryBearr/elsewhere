@@ -376,6 +376,21 @@ impl Handle {
         (code >= 0).then_some(number)
     }
 
+    pub fn get_double(&self, name: &str) -> Option<f64> {
+        let name = c(name);
+        let mut number: f64 = 0.0;
+        // SAFETY: DOUBLE writes a double.
+        let code = unsafe {
+            (self.api.get_property)(
+                self.ctx,
+                name.as_ptr(),
+                FORMAT_DOUBLE,
+                (&raw mut number).cast(),
+            )
+        };
+        (code >= 0 && number.is_finite()).then_some(number)
+    }
+
     pub fn get_string(&self, name: &str) -> Option<String> {
         let name = c(name);
         let mut pointer: *mut c_char = std::ptr::null_mut();

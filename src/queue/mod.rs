@@ -740,8 +740,13 @@ impl Actor {
             return;
         }
         playing.saved_at = Instant::now();
-        let duration = state.duration_ms.map(|ms| ms.min(i64::MAX as u64) as i64);
+        let mut duration = state.duration_ms.map(|ms| ms.min(i64::MAX as u64) as i64);
         let position = state.position_ms.min(i64::MAX as u64) as i64;
+        // Played to its end without a known length: where it ended is its length (so the
+        // play counts, and the library learns it).
+        if state.status == Status::Ended && duration.is_none() && position > 0 {
+            duration = Some(position);
+        }
         if let Err(problem) = self
             .library
             .save_progress(playing.slot.item_id, position, duration)

@@ -28,6 +28,9 @@ pub(super) enum Event {
         has_audio: bool,
         /// The picture's width and height as shown (rotation applied), for a video.
         video_size: Option<(u32, u32)>,
+        /// The length as mpv knows it now. mpv says when the length changes, so a file as
+        /// long as the one before (the same song again) brings no change of its own.
+        duration: Option<f64>,
     },
     EndFile {
         entry: i64,
@@ -183,6 +186,7 @@ impl Machine {
                 has_video,
                 has_audio,
                 video_size,
+                duration,
             } => {
                 // FILE_LOADED carries no entry: it is ours once our entry started.
                 if !self.started || self.expected.is_none() {
@@ -193,6 +197,9 @@ impl Machine {
                 self.state.has_video = has_video;
                 self.state.has_audio = has_audio;
                 self.state.video_size = video_size;
+                if let Some(seconds) = duration.filter(|seconds| *seconds > 0.0) {
+                    self.state.duration_ms = Some(millis(seconds));
+                }
                 self.refresh();
             }
             Event::EndFile {
@@ -418,7 +425,45 @@ mod tests {
             has_video: true,
             has_audio: true,
             video_size: None,
+            duration: None,
         });
+    }
+
+    #[test]
+    fn a_length_that_did_not_change_comes_with_the_loaded_file() {
+        let now = Instant::now();
+        let mut machine = Machine::new();
+        loaded(&mut machine, now);
+        assert_eq!(machine.state().duration_ms, Some(2000));
+        // The same song again: its length is the same, so mpv sends no Duration event.
+        machine.opening(PathBuf::from("/media/a.mp4"), 0, true, now);
+        assert_eq!(machine.state().duration_ms, None);
+        machine.expect(2);
+        machine.apply(Event::StartFile { entry: 2 });
+        machine.apply(Event::Pause(false));
+        machine.apply(Event::FileLoaded {
+            has_video: true,
+            has_audio: true,
+            video_size: None,
+            duration: Some(2.0),
+        });
+        assert_eq!(machine.state().duration_ms, Some(2000));
+        machine.apply(Event::EndReached(true));
+        assert_eq!(
+            (machine.state().status, machine.state().position_ms),
+            (Status::Ended, 2000)
+        );
+        // A length mpv does not know (a live or broken file) stays unknown.
+        machine.opening(PathBuf::from("/media/b.mp4"), 0, true, now);
+        machine.expect(3);
+        machine.apply(Event::StartFile { entry: 3 });
+        machine.apply(Event::FileLoaded {
+            has_video: false,
+            has_audio: true,
+            video_size: None,
+            duration: None,
+        });
+        assert_eq!(machine.state().duration_ms, None);
     }
 
     #[test]
@@ -477,6 +522,7 @@ mod tests {
             has_video: true,
             has_audio: true,
             video_size: None,
+            duration: None,
         });
         assert_eq!(machine.state().status, Status::Loading);
         assert_eq!(machine.state().position_ms, 0);
@@ -487,6 +533,7 @@ mod tests {
             has_video: false,
             has_audio: true,
             video_size: None,
+            duration: None,
         });
         assert_eq!(machine.state().status, Status::Loading);
         machine.apply(Event::StartFile { entry: 2 });
@@ -494,6 +541,7 @@ mod tests {
             has_video: false,
             has_audio: true,
             video_size: None,
+            duration: None,
         });
         let state = machine.state();
         assert_eq!(
@@ -562,6 +610,7 @@ mod tests {
             has_video: true,
             has_audio: false,
             video_size: None,
+            duration: None,
         });
         assert_eq!(
             (machine.state().status, machine.state().position_ms),

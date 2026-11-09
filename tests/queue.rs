@@ -1081,6 +1081,46 @@ fn the_entries_revision_moves_only_when_the_entries_change() {
 }
 
 #[test]
+fn the_same_song_again_has_its_length_and_every_play_counts() {
+    let shelf = shelf("same-song");
+    let a = shelf.item("A", Some("song.m4a"));
+    let b = shelf.item("B", Some("song.m4a"));
+    let (queue, seen) = queue(&shelf);
+    queue.command(Command::SetSpeed(4.0)).unwrap();
+    // The same item twice in a row, then another one with the very same file.
+    play(&queue, &[a, a, b], 0);
+    wait(&queue, "the end", |state| state.finished);
+    let lengths: Vec<_> = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|state| state.playback.status == Status::Playing)
+        .map(|state| (state.current, state.playback.duration_ms))
+        .collect();
+    for entry in 0..3 {
+        assert!(
+            lengths
+                .iter()
+                .any(|&(current, length)| current == Some(entry) && length == Some(2000)),
+            "entry {entry} played with its length: {lengths:?}"
+        );
+    }
+    assert_eq!((shelf.plays(a), shelf.plays(b)), (2, 1));
+    // Repeat one: the same file again and again, each time with its length.
+    queue.command(Command::SetRepeat(Repeat::One)).unwrap();
+    play(&queue, &[b], 0);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while shelf.plays(b) < 4 {
+        assert!(Instant::now() < deadline, "plays of B: {}", shelf.plays(b));
+        thread::sleep(Duration::from_millis(20));
+    }
+    queue.command(Command::SetRepeat(Repeat::Off)).unwrap();
+    wait(&queue, "the end", |state| state.finished);
+    let state = queue.state();
+    assert_eq!(state.playback.duration_ms, Some(2000), "{state:?}");
+}
+
+#[test]
 fn play_next_on_an_ended_queue_plays_that_entry() {
     let shelf = shelf("play-next-ended");
     let a = shelf.item("A", Some("song.m4a"));
