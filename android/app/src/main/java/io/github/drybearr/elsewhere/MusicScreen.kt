@@ -176,7 +176,10 @@ private fun Playlist(id: Long, ended: Int, onBack: () -> Unit) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
             }
             Text(
-                (summary as? Loaded.Done)?.value?.name ?: "",
+                when (val now = summary) {
+                    is Loaded.Done -> now.value.name
+                    else -> ""
+                },
                 style = MaterialTheme.typography.titleLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
