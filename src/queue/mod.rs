@@ -543,11 +543,16 @@ impl Actor {
                 }
             }
             Command::PlayNext(key) => {
-                if self.order.play_next(key) {
-                    Ok(())
-                } else {
-                    Err(no_entry(key))
+                if !self.order.play_next(key) {
+                    return Err(no_entry(key));
                 }
+                if self.finished && self.order.current().is_some_and(|slot| slot.key != key) {
+                    // The queue had ended: what was asked for comes now (as Add does).
+                    self.order.jump(key);
+                    self.failures = 0;
+                    self.open_current();
+                }
+                Ok(())
             }
             Command::Stop => {
                 self.leave_current();

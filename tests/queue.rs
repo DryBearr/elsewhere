@@ -1081,6 +1081,32 @@ fn the_entries_revision_moves_only_when_the_entries_change() {
 }
 
 #[test]
+fn play_next_on_an_ended_queue_plays_that_entry() {
+    let shelf = shelf("play-next-ended");
+    let a = shelf.item("A", Some("song.m4a"));
+    let b = shelf.item("B", Some("song.m4a"));
+    let (queue, _) = queue(&shelf);
+    queue.command(Command::SetSpeed(4.0)).unwrap();
+    play(&queue, &[a, b], 0);
+    let end = wait(&queue, "the end", |state| state.finished);
+    assert!(!end.has_next);
+    let first = end.entries[0].key;
+    queue.command(Command::PlayNext(first)).unwrap();
+    let state = queue.state();
+    assert!(!state.finished, "{state:?}");
+    assert_eq!(current_item(&state), Some(a));
+    // A moved after B, the one that ended: it is the last now, and plays to its end.
+    let order: Vec<i64> = state.entries.iter().map(|slot| slot.item_id).collect();
+    assert_eq!(order, [b, a]);
+    assert!(!state.has_next);
+    let end = wait(&queue, "the end again", |state| state.finished);
+    assert_eq!(current_item(&end), Some(a));
+    // Play next of the entry that just ended changes nothing.
+    queue.command(Command::PlayNext(first)).unwrap();
+    assert!(queue.state().finished);
+}
+
+#[test]
 fn reloading_the_sound_output_plays_on() {
     let shelf = shelf("reload-audio");
     let a = shelf.item("A", Some("long.m4a"));
