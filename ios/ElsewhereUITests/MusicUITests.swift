@@ -90,12 +90,14 @@ final class MusicUITests: XCTestCase {
 
         // Open it from the bar, close it, open it again.
         let title = app.staticTexts["player-title"]
-        app.staticTexts["now-title"].tap()
-        wait(title, "label == 'long'")
+        let bar = app.otherElements["open-player"]
+        wait(bar, "exists == true")
+        bar.tap()
+        wait(title, "label == 'long'", in: app)
         app.buttons["close-player"].tap()
         wait(title, "exists == false")
-        app.staticTexts["now-title"].tap()
-        wait(title, "label == 'long'")
+        bar.tap()
+        wait(title, "label == 'long'", in: app)
 
         // Repeat goes round off, all, one; shuffle on and off; speed from the menu.
         let repeatButton = app.buttons["repeat"]
@@ -124,10 +126,11 @@ final class MusicUITests: XCTestCase {
         slider.adjust(toNormalizedSliderPosition: 0.5)
         wait(app.staticTexts["player-elapsed"], "label == '0:02' OR label == '0:03'")
 
-        // The queue: rows with their titles; tap one to play it.
+        // The queue, below the player: rows with their titles; tap one to play it.
         let first = app.buttons["queue-0"]
         let second = app.buttons["queue-1"]
-        wait(second, "label BEGINSWITH 'song'", timeout: 30)
+        for _ in 0..<4 where !second.exists { app.swipeUp() }
+        wait(second, "label BEGINSWITH 'song'", timeout: 30, in: app)
         second.tap()
         wait(title, "label == 'song'")
         app.buttons["player-pause"].tap()
@@ -157,11 +160,15 @@ final class MusicUITests: XCTestCase {
         app.buttons["bar-stop"].tap()
     }
 
-    /// Waits for `predicate` to hold for `element`.
+    /// Waits for `predicate` to hold for `element`; if it never does, prints what `app`
+    /// shows (its accessibility tree) to say why.
     private func wait(_ element: XCUIElement, _ predicate: String, timeout: TimeInterval = 15,
-                      file: StaticString = #filePath, line: UInt = #line) {
+                      in app: XCUIApplication? = nil, file: StaticString = #filePath, line: UInt = #line) {
         let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: predicate), object: element)
         let result = XCTWaiter().wait(for: [expectation], timeout: timeout)
+        if result != .completed {
+            print((app ?? XCUIApplication()).debugDescription)
+        }
         XCTAssertEqual(result, .completed, "\(element) never \(predicate)", file: file, line: line)
     }
 }

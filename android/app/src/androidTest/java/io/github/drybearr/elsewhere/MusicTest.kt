@@ -14,6 +14,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -173,7 +174,9 @@ class MusicTest {
         waitFor("at 3 s") { it.playback.positionMs in 2500..3600 }
         ui.waitUntil(10_000) { tagText("player-elapsed") in setOf("0:02", "0:03") }
 
-        // The queue: rows with their titles; tap one to play it.
+        // The queue, below the player: rows with their titles; tap one to play it.
+        ui.waitUntil(15_000) { ui.onAllNodes(hasTestTag("player-list")).fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithTag("player-list").performScrollToNode(hasTestTag("queue-1"))
         ui.waitUntil(15_000) { rowTitle("queue-1") == "song" }
         ui.onNodeWithTag("queue-1").performClick()
         waitFor("song from the queue") { it.nowPlaying?.title == "song" && it.wantsPlay }

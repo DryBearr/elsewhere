@@ -114,7 +114,7 @@ fun PlayerScreen(onClose: () -> Unit) {
     }
 
     Surface(Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize(), state = scroll) {
+        LazyColumn(Modifier.fillMaxSize().testTag("player-list"), state = scroll) {
             item(key = "player") { Player(queue, onClose) }
             item(key = "next") {
                 Text(
