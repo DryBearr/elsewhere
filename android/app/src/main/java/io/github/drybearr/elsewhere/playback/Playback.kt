@@ -134,14 +134,20 @@ object Playback {
 
     fun playNext(key: Long, done: () -> Unit = {}) = command("play next", done) { it.playNext(key) }
 
-    /** Adds an item (a song from a playlist) at the end; to an empty queue, it plays. */
-    fun add(itemId: Long, done: () -> Unit = {}) = play("add", done) { it.add(listOf(itemId)) }
+    /** Adds an item (a song from a playlist) at the end; to an empty or ended queue, it plays. */
+    fun add(itemId: Long, done: () -> Unit = {}) = play("add", done) { queue ->
+        val idle = queue.state().let { it.entryCount == 0u || it.finished }
+        queue.add(listOf(itemId))
+        if (idle) queue.resume()
+    }
 
-    /** Adds an item right after what plays; to an empty queue, it plays. */
-    fun addNext(itemId: Long, done: () -> Unit = {}) = play("play next", done) {
-        it.add(listOf(itemId))
+    /** Adds an item right after what plays; to an empty or ended queue, it plays. */
+    fun addNext(itemId: Long, done: () -> Unit = {}) = play("play next", done) { queue ->
+        val idle = queue.state().let { it.entryCount == 0u || it.finished }
+        queue.add(listOf(itemId))
         // A new entry goes at the end of the list (also when shuffled).
-        it.entries().entries.lastOrNull()?.let { entry -> it.playNext(entry.key) }
+        if (!idle) queue.entries().entries.lastOrNull()?.let { entry -> queue.playNext(entry.key) }
+        if (idle) queue.resume()
     }
 
     /**

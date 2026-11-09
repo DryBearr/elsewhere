@@ -120,17 +120,25 @@ final class Playback: ObservableObject {
         command("play next", done) { try $0.playNext(entryKey: key) }
     }
 
-    /// Adds an item (a song from a playlist) at the end; to an empty queue, it plays.
+    /// Adds an item (a song from a playlist) at the end; to an empty or ended queue, it plays.
     func add(itemId: Int64, done: @escaping () -> Void = {}) {
-        startPlaying("add", done) { try $0.add(items: [itemId]) }
+        startPlaying("add", done) { queue in
+            let state = queue.state()
+            let idle = state.entryCount == 0 || state.finished
+            try queue.add(items: [itemId])
+            if idle { try queue.resume() }
+        }
     }
 
-    /// Adds an item right after what plays; to an empty queue, it plays.
+    /// Adds an item right after what plays; to an empty or ended queue, it plays.
     func addNext(itemId: Int64, done: @escaping () -> Void = {}) {
-        startPlaying("play next", done) {
-            try $0.add(items: [itemId])
+        startPlaying("play next", done) { queue in
+            let state = queue.state()
+            let idle = state.entryCount == 0 || state.finished
+            try queue.add(items: [itemId])
             // A new entry goes at the end of the list (also when shuffled).
-            if let entry = $0.entries().entries.last { try $0.playNext(entryKey: entry.key) }
+            if !idle, let entry = queue.entries().entries.last { try queue.playNext(entryKey: entry.key) }
+            if idle { try queue.resume() }
         }
     }
 

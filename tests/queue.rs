@@ -381,7 +381,12 @@ fn shuffle_plays_every_entry_once() {
     sorted.sort_unstable();
     assert_eq!(sorted, items, "every one once: {order:?}");
     for id in items {
-        assert_eq!(shelf.plays(id), 1);
+        let progress = shelf.library.item(id).unwrap().summary.progress;
+        assert_eq!(
+            shelf.plays(id),
+            1,
+            "item {id}: {progress:?}, played {order:?}, end {end:?}"
+        );
     }
 }
 
