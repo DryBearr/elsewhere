@@ -162,9 +162,12 @@ class MusicTest {
         ui.waitUntil(20_000) { ui.onAllNodes(hasTestTag("song-1")).fetchSemanticsNodes().isNotEmpty() }
     }
 
-    /** The text of the node with this tag, or null when there is none. */
+    /**
+     * The text of the node with this tag, or null when there is none. The unmerged tree:
+     * a tagged text inside a clickable row is merged into the row otherwise.
+     */
     private fun tagText(tag: String): String? =
-        ui.onAllNodes(hasTestTag(tag)).fetchSemanticsNodes().firstOrNull()
+        ui.onAllNodes(hasTestTag(tag), useUnmergedTree = true).fetchSemanticsNodes().firstOrNull()
             ?.config?.getOrNull(SemanticsProperties.Text)
             ?.joinToString("") { it.text }
 
