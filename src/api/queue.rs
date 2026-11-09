@@ -57,6 +57,22 @@ pub struct QueueState {
     pub problem: Option<Problem>,
     /// Entries skipped since the queue was set (the newest 100).
     pub skipped: Vec<SkippedEntry>,
+    /// Whether playback should be going (also while a file opens): the play/pause button.
+    pub wants_play: bool,
+    /// The current entry, for the lock screen and the notification.
+    pub now_playing: Option<NowPlaying>,
+}
+
+/// The current entry as a lock screen shows it.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NowPlaying {
+    pub item_id: i64,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    /// An image file inside the media folder.
+    pub cover: Option<String>,
+    pub media: super::MediaKind,
 }
 
 /// Gets the queue's state at once, then every change, on the queue's thread: hand it to
@@ -183,6 +199,11 @@ impl CoreQueue {
         Ok(self.queue.command(Command::SetSpeed(speed))?)
     }
 
+    /// 0 to 100 (for example lower while a navigation voice speaks).
+    pub fn set_volume(&self, volume: f64) -> Result<(), ApiError> {
+        Ok(self.queue.command(Command::SetVolume(volume))?)
+    }
+
     /// Adds item ids at the end (shuffled: among the entries still to come).
     pub fn add(&self, items: Vec<i64>) -> Result<(), ApiError> {
         Ok(self.queue.command(Command::Add(items))?)
@@ -249,6 +270,15 @@ impl From<queue::QueueState> for QueueState {
                     problem: skip.problem.into(),
                 })
                 .collect(),
+            wants_play: state.wants_play,
+            now_playing: state.now_playing.map(|now| NowPlaying {
+                item_id: now.item_id,
+                title: now.title,
+                artist: now.artist,
+                album: now.album,
+                cover: now.cover.map(|cover| cover.to_string_lossy().into_owned()),
+                media: super::library::media(now.media),
+            }),
         }
     }
 }

@@ -247,9 +247,12 @@ fn a_queue_where_nothing_plays_stops_with_a_problem() {
     );
     assert_ne!(end.playback.status, Status::Playing);
     // Thousands of missing files: no pile-up, just the same answer.
+    // In one transaction: 3000 separate commits would each wait for the disk.
+    shelf.db.execute_batch("BEGIN").unwrap();
     let many: Vec<i64> = (0..3000)
         .map(|n| shelf.item(&format!("Gone {n}"), None))
         .collect();
+    shelf.db.execute_batch("COMMIT").unwrap();
     let started = Instant::now();
     play(&queue, &many, 0);
     let end = wait(&queue, "stopped again", |state| {
@@ -915,4 +918,83 @@ fn seeking_while_a_file_opens_answers_and_changes_nothing() {
     wait(&queue, "past 4 s", |state| {
         state.playback.position_ms >= 3_900
     });
+}
+
+// --- What lock screens read --------------------------------------------------------
+
+#[test]
+fn now_playing_follows_the_current_entry() {
+    let shelf = shelf("now-playing");
+    let first = shelf.item("First song", Some("long.m4a"));
+    let gone = shelf.item("Gone song", None);
+    let second = shelf.item("Second song", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    play(&queue, &[first, gone, second], 0);
+    let now = queue.state().now_playing.unwrap();
+    assert_eq!((now.item_id, now.title.as_str()), (first, "First song"));
+    assert_eq!(now.media, elsewhere::library::Media::Audio);
+    // Next skips the gone one: what shows is what plays.
+    queue.command(Command::Next).unwrap();
+    let now = queue.state().now_playing.unwrap();
+    assert_eq!((now.item_id, now.title.as_str()), (second, "Second song"));
+    queue.command(Command::Stop).unwrap();
+    assert_eq!(queue.state().now_playing, None, "nothing after stop");
+    // A queue where nothing plays shows nothing (not the last queue's entry).
+    play(&queue, &[first], 0);
+    play(&queue, &[gone], 0);
+    let state = wait(&queue, "stopped", |state| state.finished);
+    assert_eq!(state.now_playing, None);
+}
+
+#[test]
+fn wants_play_is_what_the_play_button_shows() {
+    let shelf = shelf("wants-play");
+    let song = shelf.item("Song", Some("song.m4a"));
+    let long = shelf.item("Long", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    assert!(!queue.state().wants_play, "nothing queued");
+    play(&queue, &[long], 0);
+    assert!(
+        queue.state().wants_play,
+        "right away, also while the file opens"
+    );
+    queue.command(Command::Pause).unwrap();
+    assert!(!queue.state().wants_play);
+    queue.command(Command::Resume).unwrap();
+    assert!(queue.state().wants_play);
+    queue
+        .command(Command::Play {
+            items: vec![song],
+            start: 0,
+            autoplay: false,
+        })
+        .unwrap();
+    assert!(!queue.state().wants_play, "opened paused");
+    queue.command(Command::SetSpeed(4.0)).unwrap();
+    queue.command(Command::Resume).unwrap();
+    let end = wait(&queue, "finished", |state| state.finished);
+    assert!(!end.wants_play, "after the end nothing plays");
+    queue.command(Command::Stop).unwrap();
+    assert!(!queue.state().wants_play);
+}
+
+#[test]
+fn volume_goes_down_and_up_within_range() {
+    let shelf = shelf("volume");
+    let long = shelf.item("Long", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    play(&queue, &[long], 0);
+    queue.command(Command::SetVolume(20.0)).unwrap();
+    wait(&queue, "volume 20", |state| state.playback.volume == 20.0);
+    queue.command(Command::SetVolume(150.0)).unwrap();
+    wait(&queue, "volume 100", |state| state.playback.volume == 100.0);
+    queue.command(Command::SetVolume(-1.0)).unwrap();
+    wait(&queue, "volume 0", |state| state.playback.volume == 0.0);
+    assert_eq!(
+        queue
+            .command(Command::SetVolume(f64::NAN))
+            .unwrap_err()
+            .kind,
+        Kind::Input
+    );
 }

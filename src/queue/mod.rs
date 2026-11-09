@@ -70,6 +70,23 @@ pub struct QueueState {
     /// The entries skipped since the queue was set, with why (the newest 100), so a list
     /// can mark them.
     pub skipped: Vec<Skipped>,
+    /// Whether playback should be going (also while a file opens): what a lock screen's
+    /// play/pause button shows.
+    pub wants_play: bool,
+    /// What the current entry is, for lock screens and notifications.
+    pub now_playing: Option<NowPlaying>,
+}
+
+/// The current entry as a lock screen shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NowPlaying {
+    pub item_id: i64,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    /// An image file inside the media folder.
+    pub cover: Option<std::path::PathBuf>,
+    pub media: crate::library::Media,
 }
 
 /// An entry that could not be played.
@@ -104,6 +121,8 @@ pub enum Command {
     SetRepeat(Repeat),
     SetShuffle(bool),
     SetSpeed(f64),
+    /// 0 to 100 (for example lower while a navigation voice speaks).
+    SetVolume(f64),
     Add(Vec<i64>),
     Remove(u64),
     Move {
@@ -154,6 +173,8 @@ impl QueuePlayer {
                 finished: false,
                 problem: None,
                 skipped: Vec::new(),
+                wants_play: false,
+                now_playing: None,
             }),
             listener: Mutex::new(None),
         });
@@ -171,6 +192,7 @@ impl QueuePlayer {
             finished: false,
             problem: None,
             skipped: Vec::new(),
+            now: None,
         }));
         let received = Arc::new(Mutex::new(received));
         let thread_shared = Arc::clone(&shared);
@@ -263,6 +285,8 @@ struct Actor {
     finished: bool,
     problem: Option<Problem>,
     skipped: Vec<Skipped>,
+    /// The current entry, as a lock screen shows it.
+    now: Option<NowPlaying>,
 }
 
 /// The player's thread: one message at a time, then the new state goes out.
@@ -333,6 +357,8 @@ impl Actor {
             finished: self.finished,
             problem: self.problem.clone(),
             skipped: self.skipped.clone(),
+            wants_play: self.wants_play && !self.finished && self.order.current().is_some(),
+            now_playing: self.now.clone(),
         }
     }
 
@@ -356,6 +382,7 @@ impl Actor {
                     ));
                 }
                 self.leave_current();
+                self.now = None;
                 self.order.set(&items, start);
                 self.wants_play = autoplay;
                 self.problem = None;
@@ -438,6 +465,7 @@ impl Actor {
                 Ok(())
             }
             Command::SetSpeed(speed) => self.player.set_speed(speed),
+            Command::SetVolume(volume) => self.player.set_volume(volume),
             Command::Add(items) => {
                 if items.is_empty() {
                     return Ok(());
@@ -483,6 +511,7 @@ impl Actor {
                 self.leave_current();
                 self.stop_engine();
                 self.order.clear();
+                self.now = None;
                 self.finished = false;
                 self.problem = None;
                 self.skipped.clear();
@@ -623,6 +652,7 @@ impl Actor {
             slot,
             saved_at: Instant::now(),
         });
+        self.now = Some(now_playing(self.library, slot, &file));
         Ok(())
     }
 
@@ -681,4 +711,30 @@ fn no_entry(key: u64) -> Problem {
         "That entry is not in the queue any more.",
         format!("no entry with key {key}"),
     )
+}
+
+/// What a lock screen shows for an entry: from the library, or (if its details cannot be
+/// read) the file's name.
+fn now_playing(library: &Library, slot: Slot, file: &std::path::Path) -> NowPlaying {
+    match library.item(slot.item_id) {
+        Ok(detail) => NowPlaying {
+            item_id: slot.item_id,
+            title: detail.summary.title,
+            artist: detail.summary.artist,
+            album: detail.album,
+            cover: detail.summary.cover,
+            media: detail.summary.media,
+        },
+        Err(_) => NowPlaying {
+            item_id: slot.item_id,
+            title: file.file_stem().map_or_else(
+                || "Untitled".to_owned(),
+                |stem| stem.to_string_lossy().into_owned(),
+            ),
+            artist: None,
+            album: None,
+            cover: None,
+            media: crate::library::Media::Audio,
+        },
+    }
 }

@@ -403,3 +403,34 @@ fn two_queues_play_side_by_side() {
     assert_eq!((a.entries.len(), b.entries.len()), (1, 2));
     assert!(a.problem.is_none() && b.problem.is_none());
 }
+
+#[test]
+fn the_lock_screen_reads_now_playing_and_wants_play() {
+    let list = playlist();
+    let all = entries(list);
+    let (queue, _) = queue();
+    queue
+        .play_collection(list.id, Some(all[1].entry_id), true)
+        .unwrap();
+    let state = queue.state();
+    let now = state.now_playing.clone().unwrap();
+    assert_eq!(
+        (now.item_id, now.title.as_str()),
+        (all[1].item.id, all[1].item.title.as_str())
+    );
+    assert_eq!(
+        now.media,
+        api::MediaKind::Video,
+        "saved into the Videos tab"
+    );
+    assert!(state.wants_play);
+    queue.pause().unwrap();
+    assert!(!queue.state().wants_play);
+    queue.set_volume(30.0).unwrap();
+    assert_eq!(
+        kind_of(&queue.set_volume(f64::INFINITY)),
+        Some(ProblemKind::Input)
+    );
+    queue.stop().unwrap();
+    assert_eq!(queue.state().now_playing, None);
+}

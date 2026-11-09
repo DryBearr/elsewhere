@@ -271,7 +271,7 @@ pub fn set_rating(item_id: i64, rating: Option<i64>) -> Result<(), ApiError> {
     Ok(core()?.library.set_rating(item_id, rating)?)
 }
 
-fn media(media: library::Media) -> MediaKind {
+pub(super) fn media(media: library::Media) -> MediaKind {
     match media {
         library::Media::Audio => MediaKind::Audio,
         library::Media::Video => MediaKind::Video,
