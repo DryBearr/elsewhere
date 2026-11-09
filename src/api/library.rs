@@ -127,6 +127,41 @@ pub struct CollectionPage {
     pub next: Option<String>,
 }
 
+/// How a tab's items are listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum ItemOrder {
+    /// A to Z.
+    Title,
+    /// Newest first.
+    Added,
+    /// Last played first (only what was played).
+    Played,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct ItemPage {
+    pub items: Vec<ItemSummary>,
+    /// Pass it as `after` for the next page; none at the end.
+    pub next: Option<String>,
+}
+
+/// An artist or album, with how many of the tab's items it has.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Named {
+    pub name: String,
+    pub items: i64,
+    /// One of its items (an album's first track): for a picture.
+    pub first_item: i64,
+}
+
+/// What a search found (at most 50 of each).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct SearchResult {
+    pub items: Vec<ItemSummary>,
+    pub playlists: Vec<CollectionSummary>,
+    pub artists: Vec<Named>,
+}
+
 /// The library's tabs, in display order.
 #[uniffi::export]
 pub fn categories() -> Result<Vec<Category>, ApiError> {
@@ -345,4 +380,166 @@ fn collection_summary(collection: library::CollectionSummary) -> CollectionSumma
         smart: collection.smart,
         created_at: collection.created_at,
     }
+}
+
+fn item_page(page: library::Page<library::ItemSummary>) -> ItemPage {
+    ItemPage {
+        items: page.rows.into_iter().map(summary).collect(),
+        next: page.next,
+    }
+}
+
+fn named(named: library::Named) -> Named {
+    Named {
+        name: named.name,
+        items: named.items,
+        first_item: named.first_item,
+    }
+}
+
+// --- Browsing and search ---------------------------------------------------------------------
+
+/// A page of a tab's playable items (not albums or shows) in `order`; `after` is the
+/// `next` of the page before; `limit` 0 means 100, and at most 500 come.
+#[uniffi::export]
+pub fn tab_items(
+    tab_id: i64,
+    order: ItemOrder,
+    after: Option<String>,
+    limit: u32,
+) -> Result<ItemPage, ApiError> {
+    let order = match order {
+        ItemOrder::Title => library::Order::Title,
+        ItemOrder::Added => library::Order::Added,
+        ItemOrder::Played => library::Order::Played,
+    };
+    Ok(item_page(core()?.library.tab_items(
+        tab_id,
+        order,
+        after.as_deref(),
+        limit as usize,
+    )?))
+}
+
+/// The tab's artists, A to Z.
+#[uniffi::export]
+pub fn artists(tab_id: i64) -> Result<Vec<Named>, ApiError> {
+    Ok(core()?
+        .library
+        .artists(tab_id)?
+        .into_iter()
+        .map(named)
+        .collect())
+}
+
+/// A page of an artist's items in the tab, A to Z.
+#[uniffi::export]
+pub fn artist_items(
+    tab_id: i64,
+    artist: String,
+    after: Option<String>,
+    limit: u32,
+) -> Result<ItemPage, ApiError> {
+    Ok(item_page(core()?.library.artist_items(
+        tab_id,
+        &artist,
+        after.as_deref(),
+        limit as usize,
+    )?))
+}
+
+/// The tab's albums, A to Z.
+#[uniffi::export]
+pub fn albums(tab_id: i64) -> Result<Vec<Named>, ApiError> {
+    Ok(core()?
+        .library
+        .albums(tab_id)?
+        .into_iter()
+        .map(named)
+        .collect())
+}
+
+/// A page of an album's items, in track order.
+#[uniffi::export]
+pub fn album_items(
+    tab_id: i64,
+    album: String,
+    after: Option<String>,
+    limit: u32,
+) -> Result<ItemPage, ApiError> {
+    Ok(item_page(core()?.library.album_items(
+        tab_id,
+        &album,
+        after.as_deref(),
+        limit as usize,
+    )?))
+}
+
+/// Items, playlists and artists holding every word of `query`, in one tab or every tab.
+#[uniffi::export]
+pub fn search(tab_id: Option<i64>, query: String) -> Result<SearchResult, ApiError> {
+    let found = core()?.library.search(tab_id, &query)?;
+    Ok(SearchResult {
+        items: found.items.into_iter().map(summary).collect(),
+        playlists: found
+            .collections
+            .into_iter()
+            .map(collection_summary)
+            .collect(),
+        artists: found.artists.into_iter().map(named).collect(),
+    })
+}
+
+// --- Own playlists ---------------------------------------------------------------------------
+
+/// Makes an empty playlist in a tab; returns its id.
+#[uniffi::export]
+pub fn create_playlist(tab_id: i64, name: String) -> Result<i64, ApiError> {
+    Ok(core()?.library.create_collection(tab_id, &name)?)
+}
+
+#[uniffi::export]
+pub fn rename_playlist(playlist_id: i64, name: String) -> Result<(), ApiError> {
+    Ok(core()?.library.rename_collection(playlist_id, &name)?)
+}
+
+/// Deletes a playlist; its items and their files stay in the library.
+#[uniffi::export]
+pub fn delete_playlist(playlist_id: i64) -> Result<(), ApiError> {
+    Ok(core()?.library.delete_collection(playlist_id)?)
+}
+
+/// A new playlist of one's own with the same entries (a saved one's copy can be edited).
+#[uniffi::export]
+pub fn copy_playlist(playlist_id: i64, name: String) -> Result<i64, ApiError> {
+    Ok(core()?.library.copy_collection(playlist_id, &name)?)
+}
+
+/// Adds items before the entry `before` (none: at the end); returns the new entry ids.
+/// A saved playlist follows its link and is not changed by hand: copy it first.
+#[uniffi::export]
+pub fn add_to_playlist(
+    playlist_id: i64,
+    items: Vec<i64>,
+    before: Option<i64>,
+) -> Result<Vec<i64>, ApiError> {
+    Ok(core()?
+        .library
+        .add_to_collection(playlist_id, &items, before)?)
+}
+
+/// Takes entries out (all or none); the items stay in the library.
+#[uniffi::export]
+pub fn remove_from_playlist(playlist_id: i64, entries: Vec<i64>) -> Result<(), ApiError> {
+    Ok(core()?
+        .library
+        .remove_from_collection(playlist_id, &entries)?)
+}
+
+/// Moves an entry right before `before` (none: to the end).
+#[uniffi::export]
+pub fn move_in_playlist(playlist_id: i64, entry: i64, before: Option<i64>) -> Result<(), ApiError> {
+    Ok(core()?
+        .library
+        .move_in_collection(playlist_id, entry, before)?)
 }

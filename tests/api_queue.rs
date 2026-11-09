@@ -588,3 +588,72 @@ fn video_needs_the_platform_s_own_output() {
     );
     first.detach_video().unwrap();
 }
+
+#[test]
+fn own_playlists_browsing_and_search_through_the_api() {
+    let list = playlist();
+    let all = entries(list);
+    let videos = list.category_id;
+    // A playlist of one's own from the saved one's items, edited.
+    let mine = api::create_playlist(videos, " Mine ".to_owned()).unwrap();
+    let ids: Vec<i64> = all.iter().map(|entry| entry.item.id).collect();
+    let added = api::add_to_playlist(mine, ids.clone(), None).unwrap();
+    assert_eq!(added.len(), ids.len());
+    api::move_in_playlist(mine, added[3], Some(added[0])).unwrap();
+    api::remove_from_playlist(mine, vec![added[1]]).unwrap();
+    let rows: Vec<i64> = api::collection_items(mine, None, 0)
+        .unwrap()
+        .entries
+        .iter()
+        .map(|entry| entry.item.id)
+        .collect();
+    assert_eq!(rows, [ids[3], ids[0], ids[2]]);
+    assert_eq!(api::collection(mine).unwrap().name, "Mine");
+    // The saved playlist itself follows its link.
+    assert_eq!(
+        kind_of(&api::add_to_playlist(list.id, vec![ids[0]], None)),
+        Some(ProblemKind::Input)
+    );
+    let copy = api::copy_playlist(list.id, "Copy".to_owned()).unwrap();
+    api::add_to_playlist(copy, vec![ids[0]], None).unwrap();
+    api::rename_playlist(copy, "Copy 2".to_owned()).unwrap();
+    // Playing one's own playlist, then deleting it (the items stay).
+    let (queue, _) = queue();
+    queue.play_collection(mine, None, false).unwrap();
+    assert_eq!(queue.state().entry_count, 3);
+    api::delete_playlist(mine).unwrap();
+    api::delete_playlist(copy).unwrap();
+    assert!(api::item(ids[0]).is_ok());
+    assert_eq!(
+        kind_of(&api::collection(mine)),
+        Some(ProblemKind::Unavailable)
+    );
+    // Browsing and search.
+    let page = api::tab_items(videos, api::ItemOrder::Title, None, 0).unwrap();
+    assert!(
+        ids.iter()
+            .all(|id| page.items.iter().any(|item| item.id == *id))
+    );
+    let found = api::search(Some(videos), "SONG".to_owned()).unwrap();
+    assert!(
+        found.items.iter().any(|item| item.id == ids[0]),
+        "{found:?}"
+    );
+    assert!(
+        api::search(None, "Real Playlist".to_owned())
+            .unwrap()
+            .playlists
+            .iter()
+            .any(|found| found.id == list.id)
+    );
+    assert!(api::artists(videos).is_ok() && api::albums(videos).is_ok());
+    assert_eq!(
+        kind_of(&api::tab_items(
+            videos,
+            api::ItemOrder::Title,
+            Some("nonsense".to_owned()),
+            0
+        )),
+        Some(ProblemKind::Input)
+    );
+}
