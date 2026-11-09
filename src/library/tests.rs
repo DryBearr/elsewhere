@@ -1609,3 +1609,588 @@ fn files_outside_their_tab_folder_or_not_files_are_refused() {
             .unwrap();
     assert_eq!(items, 0, "nothing was added");
 }
+
+// --- Browsing and search -----------------------------------------------------------------
+
+impl Fixture {
+    fn set(&self, sql: &str) {
+        self.db.execute_batch(sql).unwrap();
+    }
+
+    fn tag(&self, item: i64, artist: &str) {
+        self.db
+            .execute(
+                "INSERT OR IGNORE INTO tag (kind, name) VALUES ('artist', ?1)",
+                [artist],
+            )
+            .unwrap();
+        self.db
+            .execute(
+                "INSERT INTO item_tag (item_id, tag_id) SELECT ?1, id FROM tag WHERE kind = 'artist' AND name = ?2",
+                params![item, artist],
+            )
+            .unwrap();
+    }
+
+    fn extra(&self, item: i64, json: &str) {
+        self.db
+            .execute(
+                "UPDATE item SET extra = ?2 WHERE id = ?1",
+                params![item, json],
+            )
+            .unwrap();
+    }
+
+    /// Every row of a browsing list, page by page.
+    fn pages(
+        &self,
+        next: impl Fn(Option<&str>) -> Result<Page<ItemSummary>, Problem>,
+    ) -> (Vec<i64>, usize) {
+        let mut ids = Vec::new();
+        let mut pages = 0;
+        let mut after: Option<String> = None;
+        loop {
+            let page = next(after.as_deref()).unwrap();
+            pages += 1;
+            ids.extend(page.rows.iter().map(|row| row.id));
+            match page.next {
+                Some(cursor) => after = Some(cursor),
+                None => return (ids, pages),
+            }
+        }
+    }
+
+    fn videos_tab(&self) -> i64 {
+        self.db
+            .query_row("SELECT id FROM category WHERE name = 'Videos'", [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    }
+}
+
+#[test]
+fn a_tab_lists_by_title_newest_and_last_played_page_by_page() {
+    let f = fixture("tab-items");
+    let mut songs = Vec::new();
+    for n in 0..250 {
+        let id = f.song(&format!("Song {n:03}"), Some(&format!("{n}.m4a")));
+        f.set(&format!(
+            "UPDATE item SET added_at = {} WHERE id = {id}",
+            1000 + n % 7
+        ));
+        songs.push(id);
+    }
+    // An album (a group) and another tab's item are not listed.
+    f.set(&format!(
+        "INSERT INTO item (category_id, kind, title, sort_title) VALUES ({}, 'group', 'Album', 'album');
+         INSERT INTO item (category_id, kind, title, sort_title) VALUES ({}, 'entry', 'Clip', 'clip');",
+        f.music_tab,
+        f.videos_tab()
+    ));
+    let tab = f.music_tab;
+    let (by_title, pages) = f.pages(|after| f.library.tab_items(tab, Order::Title, after, 100));
+    assert_eq!((by_title.len(), pages), (250, 3));
+    assert_eq!(by_title, songs, "A to Z");
+    let (newest, _) = f.pages(|after| f.library.tab_items(tab, Order::Added, after, 33));
+    let mut expected = songs.clone();
+    expected.sort_by_key(|id| std::cmp::Reverse((1000 + (id - songs[0]) % 7, *id)));
+    assert_eq!(newest, expected, "newest first, then the higher id");
+    // Last played: only played ones, the latest first.
+    f.set(&format!(
+        "INSERT INTO progress (item_id, opened_at) VALUES ({}, 50), ({}, 70), ({}, 60);",
+        songs[5], songs[9], songs[1]
+    ));
+    let (played, _) = f.pages(|after| f.library.tab_items(tab, Order::Played, after, 2));
+    assert_eq!(played, [songs[9], songs[1], songs[5]]);
+    // A cursor of one list does not fit another; unknown tabs say so.
+    let page = f.library.tab_items(tab, Order::Title, None, 10).unwrap();
+    let cursor = page.next.unwrap();
+    assert_eq!(
+        kind_of(f.library.tab_items(tab, Order::Added, Some(&cursor), 10)),
+        ProblemKind::Input
+    );
+    for bad in [
+        "",
+        "b1:t",
+        "b1:t:zz:1",
+        "b1:t:61:x",
+        "c1:t:61:1",
+        "b1:t:6:1",
+        "b1:t:61:1:2",
+    ] {
+        assert_eq!(
+            kind_of(f.library.tab_items(tab, Order::Title, Some(bad), 10)),
+            ProblemKind::Input,
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        kind_of(f.library.tab_items(9999, Order::Title, None, 10)),
+        ProblemKind::Unavailable
+    );
+    // A sort title with odd characters pages cleanly.
+    let odd = f.song("zz: \"odd\" 100% ünïcode", Some("odd.m4a"));
+    let (all, _) = f.pages(|after| f.library.tab_items(tab, Order::Title, after, 7));
+    assert_eq!(all.last(), Some(&odd));
+    assert_eq!(all.len(), 251);
+}
+
+#[test]
+fn artists_come_from_tags_and_saved_names_in_any_case() {
+    let f = fixture("artists");
+    let a = f.song("A", Some("a.m4a"));
+    let b = f.song("B", Some("b.m4a"));
+    let c = f.song("C", Some("c.m4a"));
+    let d = f.song("D", Some("d.m4a"));
+    let e = f.song("E", Some("e.m4a"));
+    f.tag(a, "Band");
+    f.tag(b, "band");
+    f.extra(c, r#"{"artist": "Solo"}"#);
+    // The same artist by tag and by name counts once; blank names are no artist.
+    f.tag(d, "Solo");
+    f.extra(d, r#"{"artist": "Solo"}"#);
+    f.extra(e, r#"{"artist": "   "}"#);
+    // Cyrillic: the same name in two cases.
+    let r1 = f.song("R1", Some("r1.m4a"));
+    let r2 = f.song("R2", Some("r2.m4a"));
+    f.tag(r1, "ДДТ");
+    f.extra(r2, r#"{"artist": "ддт"}"#);
+    let artists = f.library.artists(f.music_tab).unwrap();
+    let names: Vec<_> = artists
+        .iter()
+        .map(|artist| (artist.name.as_str(), artist.items))
+        .collect();
+    assert_eq!(names, [("Band", 2), ("Solo", 2), ("ДДТ", 2)], "{artists:?}");
+    let band = f
+        .library
+        .artist_items(f.music_tab, "BAND", None, 0)
+        .unwrap();
+    assert_eq!(
+        band.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        [a, b]
+    );
+    let russian = f
+        .library
+        .artist_items(f.music_tab, " ддт ", None, 0)
+        .unwrap();
+    assert_eq!(russian.rows.len(), 2);
+    assert!(
+        f.library
+            .artist_items(f.music_tab, "Nobody", None, 0)
+            .unwrap()
+            .rows
+            .is_empty()
+    );
+    // Pages.
+    for n in 0..30 {
+        let id = f.song(&format!("Band song {n:02}"), Some(&format!("bs{n}.m4a")));
+        f.tag(id, "Band");
+    }
+    let (all, pages) = f.pages(|after| f.library.artist_items(f.music_tab, "band", after, 8));
+    assert_eq!((all.len(), pages), (32, 4));
+    assert_eq!(kind_of(f.library.artists(9999)), ProblemKind::Unavailable);
+    assert!(f.library.artists(f.videos_tab()).unwrap().is_empty());
+}
+
+#[test]
+fn albums_list_their_tracks_in_order() {
+    let f = fixture("albums");
+    let three = f.song("Three", Some("3.m4a"));
+    let one = f.song("One", Some("1.m4a"));
+    let unnumbered = f.song("Bonus", Some("b.m4a"));
+    let two = f.song("Two", Some("2.m4a"));
+    let other = f.song("Other", Some("o.m4a"));
+    let none = f.song("None", Some("n.m4a"));
+    for (item, number) in [(three, 3), (one, 1), (two, 2)] {
+        f.set(&format!(
+            "UPDATE item SET number = {number} WHERE id = {item}"
+        ));
+    }
+    for item in [three, one, unnumbered] {
+        f.extra(item, r#"{"album": "Record"}"#);
+    }
+    f.extra(two, r#"{"album": "  record "}"#);
+    f.extra(other, r#"{"album": "Another"}"#);
+    f.extra(none, r#"{"album": ""}"#);
+    let albums = f.library.albums(f.music_tab).unwrap();
+    let names: Vec<_> = albums
+        .iter()
+        .map(|album| (album.name.as_str(), album.items))
+        .collect();
+    assert_eq!(names, [("Another", 1), ("Record", 4)], "{albums:?}");
+    let tracks = f
+        .library
+        .album_items(f.music_tab, "RECORD", None, 0)
+        .unwrap();
+    assert_eq!(
+        tracks.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        [one, two, three, unnumbered],
+        "by track number, the unnumbered last"
+    );
+    let (paged, pages) = f.pages(|after| f.library.album_items(f.music_tab, "record", after, 1));
+    assert_eq!((paged, pages), (vec![one, two, three, unnumbered], 4));
+}
+
+#[test]
+fn search_finds_every_word_in_titles_artists_and_albums() {
+    let f = fixture("search");
+    let help = f.song("Help!", Some("help.m4a"));
+    let yesterday = f.song("Yesterday", Some("y.m4a"));
+    let percent = f.song("100% Pure_Love", Some("p.m4a"));
+    let russian = f.song("Осень", Some("r.m4a"));
+    f.tag(help, "The Beatles");
+    f.extra(yesterday, r#"{"artist": "The Beatles", "album": "Help!"}"#);
+    let list = f.playlist("Beatles best", &[help]);
+    let videos = f.videos_tab();
+    f.set(&format!(
+        "INSERT INTO item (category_id, kind, title, sort_title) VALUES ({videos}, 'entry', 'Help! live', 'help! live');"
+    ));
+    let found = f.library.search(Some(f.music_tab), "beatles HELP").unwrap();
+    assert_eq!(
+        found.items.iter().map(|item| item.id).collect::<Vec<_>>(),
+        [help, yesterday],
+        "every word, in the title, an artist or the album"
+    );
+    assert!(
+        found.collections.is_empty(),
+        "the playlist's name lacks \"help\""
+    );
+    let found = f.library.search(Some(f.music_tab), "BEATLES").unwrap();
+    assert_eq!(
+        found
+            .collections
+            .iter()
+            .map(|list| list.id)
+            .collect::<Vec<_>>(),
+        [list]
+    );
+    assert_eq!(
+        found
+            .artists
+            .iter()
+            .map(|artist| artist.name.as_str())
+            .collect::<Vec<_>>(),
+        ["The Beatles"]
+    );
+    // Any alphabet, any case.
+    assert_eq!(f.library.search(None, "ОСЕНЬ").unwrap().items.len(), 1);
+    assert_eq!(
+        f.library.search(None, "осень").unwrap().items[0].id,
+        russian
+    );
+    // % and _ are letters, not wildcards.
+    assert_eq!(
+        f.library
+            .search(None, "100%")
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| i.id)
+            .collect::<Vec<_>>(),
+        [percent]
+    );
+    assert_eq!(
+        f.library
+            .search(None, "e_l")
+            .unwrap()
+            .items
+            .iter()
+            .map(|i| i.id)
+            .collect::<Vec<_>>(),
+        [percent]
+    );
+    assert!(
+        f.library
+            .search(None, "%")
+            .unwrap()
+            .items
+            .iter()
+            .all(|item| item.id == percent)
+    );
+    // Every tab, or one.
+    assert_eq!(f.library.search(None, "help").unwrap().items.len(), 3);
+    assert_eq!(
+        f.library.search(Some(videos), "help").unwrap().items.len(),
+        1
+    );
+    // Nothing to look for: nothing found; an unknown tab says so.
+    let empty = f.library.search(None, "   ").unwrap();
+    assert!(empty.items.is_empty() && empty.collections.is_empty() && empty.artists.is_empty());
+    assert_eq!(
+        kind_of(f.library.search(Some(9999), "help")),
+        ProblemKind::Unavailable
+    );
+    // A long query is cut to its first words, and works.
+    let long = format!("help {}", "x".repeat(10_000));
+    assert!(f.library.search(None, &long).unwrap().items.is_empty());
+    let many = "help ".repeat(50);
+    assert_eq!(f.library.search(None, &many).unwrap().items.len(), 3);
+}
+
+// --- Own playlists --------------------------------------------------------------------------
+
+fn entry_items(f: &Fixture, list: i64) -> Vec<i64> {
+    f.all_entries(list, 100)
+        .0
+        .iter()
+        .map(|entry| entry.item.id)
+        .collect()
+}
+
+fn entry_ids(f: &Fixture, list: i64) -> Vec<i64> {
+    f.all_entries(list, 100)
+        .0
+        .iter()
+        .map(|entry| entry.entry_id)
+        .collect()
+}
+
+#[test]
+fn own_playlists_are_made_renamed_copied_and_deleted() {
+    let f = fixture("own-playlists");
+    let a = f.song("A", Some("a.m4a"));
+    let b = f.song("B", Some("b.m4a"));
+    let list = f
+        .library
+        .create_collection(f.music_tab, "  Road   trip ")
+        .unwrap();
+    let made = f.library.collection(list).unwrap();
+    assert_eq!(
+        (made.name.as_str(), made.entries, made.source.is_none()),
+        ("Road trip", 0, true)
+    );
+    for bad in ["", "   ", &"x".repeat(MAX_NAME + 1)] {
+        assert_eq!(
+            kind_of(f.library.create_collection(f.music_tab, bad)),
+            ProblemKind::Input
+        );
+        assert_eq!(
+            kind_of(f.library.rename_collection(list, bad)),
+            ProblemKind::Input
+        );
+    }
+    assert!(
+        f.library
+            .create_collection(f.music_tab, &"ü".repeat(MAX_NAME))
+            .is_ok(),
+        "characters, not bytes"
+    );
+    assert_eq!(
+        kind_of(f.library.create_collection(9999, "X")),
+        ProblemKind::Unavailable
+    );
+    f.library.rename_collection(list, "Summer").unwrap();
+    assert_eq!(f.library.collection(list).unwrap().name, "Summer");
+    assert_eq!(
+        kind_of(f.library.rename_collection(9999, "X")),
+        ProblemKind::Unavailable
+    );
+    // A copy has the same entries in the same order, and its own.
+    f.library.add_to_collection(list, &[b, a, b], None).unwrap();
+    let copy = f.library.copy_collection(list, "Summer, again").unwrap();
+    assert_eq!(entry_items(&f, copy), [b, a, b]);
+    f.library
+        .remove_from_collection(copy, &entry_ids(&f, copy)[..1])
+        .unwrap();
+    assert_eq!(entry_items(&f, list), [b, a, b], "the original stays");
+    // A saved playlist's copy is the person's own.
+    let saved = f.playlist("Saved", &[a]);
+    f.set(&format!(
+        "UPDATE collection SET source = 'YoutubeTab:PL1' WHERE id = {saved}"
+    ));
+    let mine = f.library.copy_collection(saved, "Mine").unwrap();
+    assert!(f.library.collection(mine).unwrap().source.is_none());
+    f.library.add_to_collection(mine, &[b], None).unwrap();
+    // Deleting a playlist keeps its items.
+    f.library.delete_collection(list).unwrap();
+    assert_eq!(
+        kind_of(f.library.collection(list)),
+        ProblemKind::Unavailable
+    );
+    assert!(f.library.item(a).is_ok() && f.library.item(b).is_ok());
+    assert_eq!(
+        kind_of(f.library.delete_collection(list)),
+        ProblemKind::Unavailable
+    );
+    assert_eq!(
+        kind_of(f.library.copy_collection(9999, "X")),
+        ProblemKind::Unavailable
+    );
+}
+
+#[test]
+fn entries_are_added_moved_and_taken_out_in_order() {
+    let f = fixture("entries");
+    let [a, b, c, d] =
+        ["A", "B", "C", "D"].map(|title| f.song(title, Some(&format!("{title}.m4a"))));
+    let list = f.library.create_collection(f.music_tab, "List").unwrap();
+    let added = f.library.add_to_collection(list, &[a, b], None).unwrap();
+    assert_eq!(added.len(), 2);
+    // Before an entry, in the order given; the same item twice.
+    f.library
+        .add_to_collection(list, &[c, c], Some(added[1]))
+        .unwrap();
+    assert_eq!(entry_items(&f, list), [a, c, c, b]);
+    let ids = entry_ids(&f, list);
+    // To the front, to the end, before itself (nothing changes), between.
+    f.library
+        .move_in_collection(list, ids[3], Some(ids[0]))
+        .unwrap();
+    assert_eq!(entry_items(&f, list), [b, a, c, c]);
+    f.library.move_in_collection(list, ids[3], None).unwrap();
+    assert_eq!(entry_items(&f, list), [a, c, c, b]);
+    f.library
+        .move_in_collection(list, ids[0], Some(ids[0]))
+        .unwrap();
+    assert_eq!(entry_items(&f, list), [a, c, c, b]);
+    f.library
+        .move_in_collection(list, ids[0], Some(ids[2]))
+        .unwrap();
+    assert_eq!(entry_items(&f, list), [c, a, c, b]);
+    // Taking out: all or nothing.
+    let ids = entry_ids(&f, list);
+    assert_eq!(
+        kind_of(f.library.remove_from_collection(list, &[ids[0], 99_999])),
+        ProblemKind::Unavailable
+    );
+    assert_eq!(entry_items(&f, list), [c, a, c, b], "nothing was taken out");
+    f.library
+        .remove_from_collection(list, &[ids[0], ids[2]])
+        .unwrap();
+    assert_eq!(entry_items(&f, list), [a, b]);
+    // Adding: all or nothing too, and only playable items of the playlist's tab.
+    let album: i64 = f
+        .db
+        .query_row(
+            &format!("INSERT INTO item (category_id, kind, title, sort_title) VALUES ({}, 'group', 'Al', 'al') RETURNING id", f.music_tab),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let clip: i64 = f
+        .db
+        .query_row(
+            &format!("INSERT INTO item (category_id, kind, title, sort_title) VALUES ({}, 'entry', 'Cl', 'cl') RETURNING id", f.videos_tab()),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    for (items, kind) in [
+        (vec![d, album], ProblemKind::Input),
+        (vec![d, clip], ProblemKind::Input),
+        (vec![d, 99_999], ProblemKind::Unavailable),
+    ] {
+        assert_eq!(
+            kind_of(f.library.add_to_collection(list, &items, None)),
+            kind,
+            "{items:?}"
+        );
+    }
+    assert_eq!(entry_items(&f, list), [a, b], "nothing was added");
+    assert_eq!(
+        kind_of(
+            f.library
+                .add_to_collection(list, &vec![a; MAX_ADD + 1], None)
+        ),
+        ProblemKind::Input
+    );
+    assert_eq!(
+        kind_of(f.library.add_to_collection(list, &[a], Some(99_999))),
+        ProblemKind::Unavailable
+    );
+    // An entry of another playlist is not this one's.
+    let other = f.library.create_collection(f.music_tab, "Other").unwrap();
+    let theirs = f.library.add_to_collection(other, &[d], None).unwrap();
+    assert_eq!(
+        kind_of(f.library.move_in_collection(list, theirs[0], None)),
+        ProblemKind::Unavailable
+    );
+    assert_eq!(
+        kind_of(f.library.remove_from_collection(list, &theirs)),
+        ProblemKind::Unavailable
+    );
+    assert_eq!(
+        kind_of(f.library.add_to_collection(list, &[d], Some(theirs[0]))),
+        ProblemKind::Unavailable
+    );
+    assert!(
+        f.library
+            .add_to_collection(list, &[], None)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn saved_and_smart_playlists_are_not_edited_by_hand() {
+    let f = fixture("not-by-hand");
+    let a = f.song("A", Some("a.m4a"));
+    let saved = f.playlist("Saved", &[a]);
+    f.set(&format!(
+        "UPDATE collection SET source = 'YoutubeTab:PL1' WHERE id = {saved}"
+    ));
+    let smart = f.playlist("Smart", &[]);
+    f.set(&format!(
+        "UPDATE collection SET query = '{{}}' WHERE id = {smart}"
+    ));
+    let entry = entry_ids(&f, saved)[0];
+    for list in [saved, smart] {
+        assert_eq!(
+            kind_of(f.library.add_to_collection(list, &[a], None)),
+            ProblemKind::Input
+        );
+        assert_eq!(
+            kind_of(f.library.remove_from_collection(list, &[entry])),
+            ProblemKind::Input
+        );
+        assert_eq!(
+            kind_of(f.library.move_in_collection(list, entry, None)),
+            ProblemKind::Input
+        );
+    }
+    assert_eq!(entry_items(&f, saved), [a]);
+    // Its name can change, and it can go.
+    f.library.rename_collection(saved, "Renamed").unwrap();
+    assert_eq!(
+        kind_of(f.library.copy_collection(smart, "Copy")),
+        ProblemKind::Input
+    );
+    f.library.delete_collection(smart).unwrap();
+    f.library.delete_collection(saved).unwrap();
+}
+
+#[test]
+fn entries_squeezed_in_again_and_again_keep_their_order() {
+    let f = fixture("squeeze");
+    let [a, b, c] = ["A", "B", "C"].map(|title| f.song(title, Some(&format!("{title}.m4a"))));
+    let list = f.library.create_collection(f.music_tab, "List").unwrap();
+    let first = f.library.add_to_collection(list, &[a, b], None).unwrap();
+    // Each new one right before B: the gap halves every time, so the playlist is
+    // numbered again on the way.
+    for _ in 0..200 {
+        f.library
+            .add_to_collection(list, &[c], Some(first[1]))
+            .unwrap();
+    }
+    let items = entry_items(&f, list);
+    assert_eq!(items.len(), 202);
+    assert_eq!(items[0], a);
+    assert_eq!(items[201], b);
+    assert!(items[1..201].iter().all(|item| *item == c));
+    // And moving one to just before B, again and again.
+    let ids = entry_ids(&f, list);
+    for &entry in &ids[1..60] {
+        f.library
+            .move_in_collection(list, entry, Some(first[1]))
+            .unwrap();
+    }
+    let moved = entry_ids(&f, list);
+    assert_eq!(moved[0], first[0]);
+    assert_eq!(moved[201], first[1]);
+    assert_eq!(
+        &moved[201 - 59..201],
+        &ids[1..60],
+        "moved ones, in the order they were moved"
+    );
+}

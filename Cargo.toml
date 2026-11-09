@@ -22,7 +22,7 @@ bindgen = ["uniffi/cli", "uniffi/cargo-metadata"]
 
 [dependencies]
 pyo3 = { version = "0.30", optional = true }
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled", "functions"] }
 # Reads yt-dlp's info JSON and the lyrics service's answers (playlists feature).
 serde_json = { version = "1", optional = true }
 uniffi = { version = "0.32", default-features = false }

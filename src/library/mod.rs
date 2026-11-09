@@ -15,10 +15,14 @@
 //! - **One connection, healed.** Opened once and reused; a call that fails because the
 //!   connection broke reopens it and runs once more. Errors are Problems.
 
+mod browse;
+mod edit;
 mod marks;
 #[cfg(test)]
 mod tests;
 
+pub use browse::{Found, Named, Order};
+pub use edit::{MAX_ADD, MAX_NAME};
 pub use marks::{PlayStart, Rules};
 
 use std::fs;
@@ -537,6 +541,23 @@ impl Library {
             tx.commit()?;
             Ok(value)
         })
+    }
+
+    /// Like `write`, for a change that can be refused halfway (`Err` inside): only a change
+    /// that went through is committed, so a refusal leaves everything as it was.
+    fn change<T>(
+        &self,
+        doing: &str,
+        change: impl Fn(&rusqlite::Transaction) -> rusqlite::Result<Result<T, Problem>>,
+    ) -> Result<T, Problem> {
+        self.read(doing, |db| {
+            let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let value = change(&tx)?;
+            if value.is_ok() {
+                tx.commit()?;
+            }
+            Ok(value)
+        })?
     }
 
     fn lock(&self) -> MutexGuard<'_, Option<Connection>> {

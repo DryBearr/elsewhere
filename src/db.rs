@@ -20,8 +20,28 @@ pub fn open(path: &Path) -> rusqlite::Result<Connection> {
     db.pragma_update(None, "synchronous", "NORMAL")?;
     db.pragma_update(None, "foreign_keys", true)?;
     db.busy_timeout(Duration::from_secs(5))?;
+    fold_function(&db)?;
     migrate(&mut db)?;
     Ok(db)
+}
+
+/// `fold(text)`: the text in lower case, in every alphabet (SQLite's own lower() and LIKE
+/// fold only A to Z). Searches compare folded text.
+fn fold_function(db: &Connection) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    db.create_scalar_function(
+        "fold",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |context| {
+            Ok(match context.get_raw(0) {
+                rusqlite::types::ValueRef::Text(text) => {
+                    Some(String::from_utf8_lossy(text).to_lowercase())
+                }
+                _ => None,
+            })
+        },
+    )
 }
 
 fn migrate(db: &mut Connection) -> rusqlite::Result<()> {
