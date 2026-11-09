@@ -188,6 +188,18 @@ pub fn collection_items(
     })
 }
 
+/// List rows for these item ids, in the same order (none for an id no longer in the
+/// library): what a queue screen shows. At most 500 at once.
+#[uniffi::export]
+pub fn items(ids: Vec<i64>) -> Result<Vec<Option<ItemSummary>>, ApiError> {
+    Ok(core()?
+        .library
+        .items(&ids)?
+        .into_iter()
+        .map(|found| found.map(summary))
+        .collect())
+}
+
 #[uniffi::export]
 pub fn item(id: i64) -> Result<ItemDetail, ApiError> {
     let detail = core()?.library.item(id)?;

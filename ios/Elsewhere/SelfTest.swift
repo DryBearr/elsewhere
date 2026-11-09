@@ -110,7 +110,7 @@ enum SelfTest {
         let item = state.nowPlaying.map { "\($0.itemId)" } ?? "null"
         let duration = playback.durationMs.map { "\($0)" } ?? "null"
         let problem = state.problem.map { "\($0.kind)" } ?? "null"
-        say("QUEUE rev=\(state.revision) entries=\(state.entries.count) current=\(current) item=\(item) status=\(playback.status) wants=\(state.wantsPlay) pos=\(playback.positionMs) dur=\(duration) volume=\(playback.volume) finished=\(state.finished) next=\(state.hasNext) keeps=\(Playback.shared.keepsGoing) problem=\(problem) title=\(state.nowPlaying?.title ?? "null")")
+        say("QUEUE rev=\(state.revision) entries=\(state.entryCount) current=\(current) item=\(item) status=\(playback.status) wants=\(state.wantsPlay) pos=\(playback.positionMs) dur=\(duration) volume=\(playback.volume) finished=\(state.finished) next=\(state.hasNext) keeps=\(Playback.shared.keepsGoing) problem=\(problem) title=\(state.nowPlaying?.title ?? "null")")
     }
 
     /// Adds two test songs to the Music tab and plays them again and again through Playback.

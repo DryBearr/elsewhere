@@ -57,6 +57,9 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct QueueState {
     pub revision: u64,
     pub entries: Vec<Slot>,
+    /// Goes up only when `entries` change (added, removed, moved, a new queue), so a list
+    /// of thousands is sent to the apps only then.
+    pub entries_revision: u64,
     /// Index into `entries` of the current one.
     pub current: Option<usize>,
     pub repeat: Repeat,
@@ -138,6 +141,8 @@ pub enum Command {
         key: u64,
         to: usize,
     },
+    /// Plays the entry with this key right after the current one (shuffled too).
+    PlayNext(u64),
     /// Ends playback and empties the queue.
     Stop,
 }
@@ -175,6 +180,7 @@ impl QueuePlayer {
             state: Mutex::new(QueueState {
                 revision: 1,
                 entries: Vec::new(),
+                entries_revision: 1,
                 current: None,
                 repeat: Repeat::Off,
                 shuffle: false,
@@ -335,8 +341,12 @@ fn publish(shared: &Shared, mut state: QueueState) {
     {
         let mut shown = lock(&shared.state);
         state.revision = shown.revision;
+        state.entries_revision = shown.entries_revision;
         if state == *shown {
             return;
+        }
+        if state.entries != shown.entries {
+            state.entries_revision += 1;
         }
         state.revision = shown.revision + 1;
         *shown = state.clone();
@@ -361,6 +371,7 @@ impl Actor {
         QueueState {
             revision: 0,
             entries: self.order.slots().to_vec(),
+            entries_revision: 0,
             current: self.order.current_index(),
             repeat: self.order.repeat,
             shuffle: self.order.shuffle(),
@@ -526,6 +537,13 @@ impl Actor {
             }
             Command::Move { key, to } => {
                 if self.order.move_to(key, to) {
+                    Ok(())
+                } else {
+                    Err(no_entry(key))
+                }
+            }
+            Command::PlayNext(key) => {
+                if self.order.play_next(key) {
                     Ok(())
                 } else {
                     Err(no_entry(key))

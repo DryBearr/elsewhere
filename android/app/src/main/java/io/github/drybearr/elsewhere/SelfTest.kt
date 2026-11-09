@@ -99,7 +99,7 @@ object SelfTest {
     fun onQueue(state: QueueState) {
         if (!enabled) return
         val playback = state.playback
-        Log.i(TAG, "QUEUE rev=${state.revision} entries=${state.entries.size} current=${state.current} item=${state.nowPlaying?.itemId} status=${playback.status} wants=${state.wantsPlay} pos=${playback.positionMs} dur=${playback.durationMs} volume=${playback.volume} finished=${state.finished} next=${state.hasNext} keeps=${Playback.keepsGoing} problem=${state.problem?.kind} title=${state.nowPlaying?.title}")
+        Log.i(TAG, "QUEUE rev=${state.revision} entries=${state.entryCount} current=${state.current} item=${state.nowPlaying?.itemId} status=${playback.status} wants=${state.wantsPlay} pos=${playback.positionMs} dur=${playback.durationMs} volume=${playback.volume} finished=${state.finished} next=${state.hasNext} keeps=${Playback.keepsGoing} problem=${state.problem?.kind} title=${state.nowPlaying?.title}")
     }
 
     private fun interrupted() = jobs().filter { it.status == JobStatus.INTERRUPTED }

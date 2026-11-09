@@ -393,6 +393,33 @@ fn a_playlist_deleted_while_paging_or_a_smart_one_says_so() {
 }
 
 #[test]
+fn rows_for_many_items_come_in_the_order_asked_with_gaps_for_gone_ones() {
+    let f = fixture("items");
+    let a = f.song("A", Some("a.m4a"));
+    let b = f.song("B", Some("b.m4a"));
+    f.db.execute_batch(&format!(
+        "INSERT INTO tag (kind, name) VALUES ('artist', 'Band');
+         INSERT INTO item_tag (item_id, tag_id) SELECT {b}, id FROM tag;"
+    ))
+    .unwrap();
+    let rows = f.library.items(&[b, 9999, a, b]).unwrap();
+    let titles: Vec<_> = rows
+        .iter()
+        .map(|row| row.as_ref().map(|item| item.title.as_str()))
+        .collect();
+    assert_eq!(titles, [Some("B"), None, Some("A"), Some("B")]);
+    // The same row as a page of a playlist gives, artists included.
+    assert_eq!(rows[0].as_ref().unwrap().artists, ["Band"]);
+    let list = f.playlist("List", &[b]);
+    let (entries, _) = f.all_entries(list, 10);
+    assert_eq!(rows[0].as_ref(), Some(&entries[0].item));
+    assert!(f.library.items(&[]).unwrap().is_empty());
+    let many = vec![a; MAX_PAGE + 1];
+    assert_eq!(kind_of(f.library.items(&many)), ProblemKind::Input);
+    assert_eq!(f.library.items(&many[..MAX_PAGE]).unwrap().len(), MAX_PAGE);
+}
+
+#[test]
 fn item_details_survive_odd_and_missing_data() {
     let f = fixture("details");
     let song = f.song("Hit", Some("hit.m4a"));

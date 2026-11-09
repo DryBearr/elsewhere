@@ -1000,6 +1000,82 @@ fn volume_goes_down_and_up_within_range() {
 }
 
 #[test]
+fn the_entries_revision_moves_only_when_the_entries_change() {
+    let shelf = shelf("entries-revision");
+    let a = shelf.item("A", Some("long.m4a"));
+    let b = shelf.item("B", Some("long.m4a"));
+    let (queue, seen) = queue(&shelf);
+    let start = queue.state().entries_revision;
+    play(&queue, &[a, b], 0);
+    let played = queue.state();
+    assert!(played.entries_revision > start, "a new queue");
+    wait(&queue, "playing A", |state| {
+        state.playback.status == Status::Playing
+    });
+    // Playing on, pausing, seeking, repeat, shuffle and next leave the entries as they are.
+    thread::sleep(Duration::from_millis(600));
+    for command in [
+        Command::Pause,
+        Command::Seek(1000),
+        Command::SetRepeat(Repeat::All),
+        Command::SetShuffle(true),
+        Command::SetShuffle(false),
+        Command::Next,
+        Command::Resume,
+    ] {
+        queue.command(command).unwrap();
+    }
+    let same = queue.state();
+    assert_eq!(same.entries_revision, played.entries_revision, "{same:?}");
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|state| state.revision > played.revision)
+            .count()
+            > 3,
+        "states came meanwhile"
+    );
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|state| state.revision >= played.revision)
+            .all(|state| state.entries_revision == played.entries_revision),
+        "no state on the way said otherwise"
+    );
+    // Each change to the entries moves it once more.
+    let mut last = played.entries_revision;
+    let key = |state: &QueueState, index: usize| state.entries[index].key;
+    for change in ["add", "move", "remove", "stop"] {
+        let state = queue.state();
+        let command = match change {
+            "add" => Command::Add(vec![a]),
+            "move" => Command::Move {
+                key: key(&state, 2),
+                to: 0,
+            },
+            "remove" => Command::Remove(key(&state, 0)),
+            _ => Command::Stop,
+        };
+        queue.command(command).unwrap();
+        let now = queue.state().entries_revision;
+        assert_eq!(now, last + 1, "{change}");
+        last = now;
+    }
+    // Moving an entry to where it is changes nothing.
+    play(&queue, &[a, b], 0);
+    let state = queue.state();
+    queue
+        .command(Command::Move {
+            key: key(&state, 1),
+            to: 1,
+        })
+        .unwrap();
+    assert_eq!(queue.state().entries_revision, state.entries_revision);
+}
+
+#[test]
 fn reloading_the_sound_output_plays_on() {
     let shelf = shelf("reload-audio");
     let a = shelf.item("A", Some("long.m4a"));

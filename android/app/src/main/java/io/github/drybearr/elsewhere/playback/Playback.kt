@@ -222,7 +222,7 @@ object Playback {
      */
     private fun settle() {
         val state = shown.value ?: return
-        if (starting == 0 && !resumeAfterLoss && !state.wantsPlay && (state.finished || state.entries.isEmpty())) {
+        if (starting == 0 && !resumeAfterLoss && !state.wantsPlay && (state.finished || (state.entryCount == 0u))) {
             abandonFocus()
         }
     }

@@ -7,7 +7,7 @@ struct PlayerBar: View {
     @ObservedObject private var playback = Playback.shared
 
     var body: some View {
-        if let queue = playback.state, let index = queue.current, Int(index) < queue.entries.count {
+        if let queue = playback.state, let index = queue.current, index < queue.entryCount {
             bar(queue)
         } else if let message = playback.message {
             // Nothing queued: only a refusal shows (for example no sound during a call).

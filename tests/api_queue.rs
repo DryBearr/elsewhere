@@ -102,10 +102,17 @@ fn wait(queue: &CoreQueue, what: &str, check: impl Fn(&QueueState) -> bool) -> Q
     }
 }
 
-fn current_item(state: &QueueState) -> Option<i64> {
-    state
-        .current
-        .map(|index| state.entries[index as usize].item_id)
+/// The current entry's item, from the queue's entries as they were for `state`.
+fn current_item(queue: &CoreQueue, state: &QueueState) -> Option<i64> {
+    let entries = queue.entries();
+    assert_eq!(
+        entries.revision, state.entries_revision,
+        "the entries changed since"
+    );
+    let current = state.current?;
+    let entry = entries.entries[current as usize];
+    assert_eq!(Some(entry.key), state.current_key);
+    Some(entry.item_id)
 }
 
 fn plays(item: i64) -> i64 {
@@ -207,8 +214,10 @@ fn a_saved_playlist_plays_to_its_end() {
     queue.set_speed(4.0).unwrap();
     queue.play_collection(list.id, None, true).unwrap();
     let state = queue.state();
+    assert_eq!(state.entry_count, 4);
     assert_eq!(
-        state
+        queue
+            .entries()
             .entries
             .iter()
             .map(|entry| entry.item_id)
@@ -249,13 +258,13 @@ fn a_playlist_starts_from_any_of_its_entries() {
         .unwrap();
     let state = queue.state();
     assert_eq!(
-        (state.current, current_item(&state)),
+        (state.current, current_item(&queue, &state)),
         (Some(2), Some(all[2].item.id))
     );
     let paused = wait(&queue, "paused at the start", |state| {
         state.playback.status == api::PlayerStatus::Paused
     });
-    assert_eq!(current_item(&paused), Some(all[2].item.id));
+    assert_eq!(current_item(&queue, &paused), Some(all[2].item.id));
 }
 
 #[test]
@@ -301,7 +310,7 @@ fn wrong_playlists_entries_and_keys_are_refused() {
         kind_of(&queue.set_speed(f64::NAN)),
         Some(ProblemKind::Input)
     );
-    assert_eq!(queue.state().entries.len(), 4, "refusals change nothing");
+    assert_eq!(queue.state().entry_count, 4, "refusals change nothing");
 
     // An empty playlist and a smart one, made in the database directly.
     let db = rusqlite::Connection::open(std::path::Path::new(&folders().data).join("elsewhere.db"))
@@ -329,7 +338,7 @@ fn wrong_playlists_entries_and_keys_are_refused() {
         Some(ProblemKind::Input)
     );
     assert_eq!(
-        queue.state().entries.len(),
+        queue.state().entry_count,
         4,
         "the queue playing before stays"
     );
@@ -342,7 +351,7 @@ fn every_command_shows_in_the_state_when_it_returns() {
     let (queue, _) = queue();
     queue.play_collection(list.id, None, false).unwrap();
     let keys: Vec<i64> = queue
-        .state()
+        .entries()
         .entries
         .iter()
         .map(|entry| entry.key)
@@ -359,28 +368,44 @@ fn every_command_shows_in_the_state_when_it_returns() {
     let shuffled = queue.state();
     assert!(shuffled.shuffle);
     assert_eq!(
-        current_item(&shuffled),
+        current_item(&queue, &shuffled),
         Some(all[2].item.id),
         "shuffle keeps the current one"
     );
     queue.set_shuffle(false).unwrap();
     queue.add(vec![all[0].item.id]).unwrap();
-    let added = queue.state();
-    assert_eq!(added.entries.len(), 5);
+    let added = queue.entries();
+    assert_eq!(queue.state().entry_count, 5);
+    assert_eq!(added.revision, queue.state().entries_revision);
     let new_key = added.entries[4].key;
     assert!(!keys.contains(&new_key), "a new key for the same item");
     queue.move_entry(new_key, 0).unwrap();
-    assert_eq!(queue.state().entries[0].key, new_key);
+    assert_eq!(queue.entries().entries[0].key, new_key);
     assert_eq!(
-        current_item(&queue.state()),
+        current_item(&queue, &queue.state()),
         Some(all[2].item.id),
         "moving keeps what plays"
     );
+    // Play next: right after what plays, in the list too.
+    queue.play_next(new_key).unwrap();
+    let listed = queue.entries();
+    let current = queue.state().current.unwrap() as usize;
+    assert_eq!(listed.entries[current + 1].key, new_key);
+    assert_eq!(
+        kind_of(&queue.play_next(i64::MAX)),
+        Some(ProblemKind::Input),
+        "an unknown entry"
+    );
+    assert_eq!(kind_of(&queue.play_next(-1)), Some(ProblemKind::Input));
     queue.remove(new_key).unwrap();
-    assert_eq!(queue.state().entries.len(), 4);
+    assert_eq!(queue.state().entry_count, 4);
     queue.stop().unwrap();
     let stopped = queue.state();
-    assert_eq!((stopped.entries.len(), stopped.current), (0, None));
+    assert_eq!(
+        (stopped.entry_count, stopped.current, stopped.current_key),
+        (0, None, None)
+    );
+    assert!(queue.entries().entries.is_empty());
 }
 
 #[test]
@@ -462,7 +487,7 @@ fn a_file_gone_since_it_was_saved_is_skipped_with_its_reason() {
         (gone, ProblemKind::Unavailable)
     );
     assert_eq!(
-        current_item(&end),
+        current_item(&queue, &end),
         Some(all[0].item.id),
         "the next one played"
     );
@@ -482,7 +507,7 @@ fn two_queues_play_side_by_side() {
         .unwrap();
     let a = wait(&first, "first finished", |state| state.finished);
     let b = wait(&second, "second finished", |state| state.finished);
-    assert_eq!((a.entries.len(), b.entries.len()), (1, 2));
+    assert_eq!((a.entry_count, b.entry_count), (1, 2));
     assert!(a.problem.is_none() && b.problem.is_none());
 }
 

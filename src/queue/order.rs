@@ -251,6 +251,44 @@ impl Order {
         true
     }
 
+    /// Makes the entry with `key` play right after the current one, with shuffle too, and
+    /// puts it just below the current one in the list. The current entry itself stays where
+    /// it is. False when there is no such entry.
+    pub fn play_next(&mut self, key: u64) -> bool {
+        let Some(from) = self.slots.iter().position(|slot| slot.key == key) else {
+            return false;
+        };
+        let Some(current) = self.current() else {
+            return false;
+        };
+        if current.key == key {
+            return true;
+        }
+        let mut play: Vec<u64> = self.order.iter().map(|&i| self.slots[i].key).collect();
+        play.retain(|&other| other != key);
+        let after = play
+            .iter()
+            .position(|&other| other == current.key)
+            .unwrap_or(0);
+        play.insert(after + 1, key);
+        let slot = self.slots.remove(from);
+        let below = self
+            .slots
+            .iter()
+            .position(|other| other.key == current.key)
+            .unwrap_or(0);
+        self.slots.insert(below + 1, slot);
+        let index: std::collections::HashMap<u64, usize> = self
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| (slot.key, i))
+            .collect();
+        self.order = play.iter().map(|key| index[key]).collect();
+        self.at = Some(after);
+        true
+    }
+
     /// Whether `next` (a skip) has somewhere to go: a later entry, or round again with repeat.
     pub fn has_next(&self) -> bool {
         match self.at {
@@ -672,6 +710,80 @@ mod tests {
             3,
             "the play order goes on from there: {after:?}"
         );
+    }
+
+    fn key_of(order: &Order, item: i64) -> u64 {
+        order
+            .slots()
+            .iter()
+            .find(|slot| slot.item_id == item)
+            .unwrap()
+            .key
+    }
+
+    fn list(order: &Order) -> Vec<i64> {
+        order.slots().iter().map(|slot| slot.item_id).collect()
+    }
+
+    #[test]
+    fn play_next_comes_right_after_the_current_one() {
+        let mut order = Order::new(1);
+        order.set(&[1, 2, 3, 4, 5], 1);
+        // From later and from earlier in the list.
+        assert!(order.play_next(key_of(&order, 5)));
+        assert_eq!(list(&order), [1, 2, 5, 3, 4]);
+        assert_eq!(order.current().unwrap().item_id, 2, "what plays stays");
+        assert!(order.play_next(key_of(&order, 1)));
+        assert_eq!(list(&order), [2, 1, 5, 3, 4]);
+        assert_eq!(items(&mut order, true, 10), [2, 1, 5, 3, 4]);
+        // The current one, and an unknown key.
+        let mut order = Order::new(1);
+        order.set(&[1, 2, 3], 0);
+        assert!(order.play_next(key_of(&order, 1)));
+        assert_eq!(list(&order), [1, 2, 3]);
+        assert!(!order.play_next(999));
+        let mut empty = Order::new(1);
+        assert!(!empty.play_next(1));
+        // At the last entry: it becomes the next one.
+        let mut order = Order::new(1);
+        order.set(&[1, 2, 3], 2);
+        assert!(order.play_next(key_of(&order, 1)));
+        assert!(order.has_next());
+        assert_eq!(order.next(false).unwrap().item_id, 1);
+    }
+
+    #[test]
+    fn play_next_works_shuffled_and_after_shuffle_goes_off() {
+        for seed in 1..50 {
+            let mut order = Order::new(seed);
+            order.set_shuffle(true);
+            order.set(&(1..=8).collect::<Vec<_>>(), 0);
+            order.next(false);
+            let current = order.current().unwrap().item_id;
+            // Something that would come much later (or was played already).
+            let wanted = order.slots()[order.order[0]].item_id;
+            assert!(order.play_next(key_of(&order, wanted)));
+            assert_eq!(order.current().unwrap().item_id, current);
+            assert_eq!(order.next(false).unwrap().item_id, wanted, "seed {seed}");
+            // Every entry is still there once.
+            let mut all = list(&order);
+            all.sort_unstable();
+            assert_eq!(all, (1..=8).collect::<Vec<_>>());
+            let mut played: Vec<_> = order.order.clone();
+            played.sort_unstable();
+            assert_eq!(played, (0..8).collect::<Vec<_>>());
+            // Off: the list goes on from the current one, and it is just below.
+            let now = order.current().unwrap();
+            let target = order
+                .slots()
+                .iter()
+                .find(|slot| slot.key != now.key)
+                .unwrap()
+                .item_id;
+            order.play_next(key_of(&order, target));
+            order.set_shuffle(false);
+            assert_eq!(order.next(false).unwrap().item_id, target, "seed {seed}");
+        }
     }
 
     #[test]

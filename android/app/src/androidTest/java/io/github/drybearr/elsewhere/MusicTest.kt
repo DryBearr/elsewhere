@@ -106,7 +106,7 @@ class MusicTest {
 
         // Stop: the bar goes away.
         ui.onNodeWithContentDescription("Stop").performClick()
-        waitFor("stopped") { it.entries.isEmpty() }
+        waitFor("stopped") { it.entryCount == 0u }
         ui.waitUntil(10_000) { ui.onAllNodes(hasContentDescription("Stop")).fetchSemanticsNodes().isEmpty() }
 
         // Plays were counted, and the library learned the lengths from playing.

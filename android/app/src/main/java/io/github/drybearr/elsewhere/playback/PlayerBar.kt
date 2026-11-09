@@ -35,7 +35,7 @@ fun PlayerBar() {
     val message by Playback.message.collectAsState()
     val queue = state
     val index = queue?.current?.toInt()
-    if (queue == null || index == null || index >= queue.entries.size) {
+    if (queue == null || index == null || index.toUInt() >= queue.entryCount) {
         // Nothing queued: only a refusal shows (for example no sound during a call).
         message?.let { text ->
             Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {

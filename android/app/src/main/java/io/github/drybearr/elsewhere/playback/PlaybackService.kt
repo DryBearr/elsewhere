@@ -139,7 +139,7 @@ class PlaybackService : Service() {
         if (gone) return
         val state = Playback.state.value
         val index = state?.current?.toInt()
-        if (state == null || index == null || index >= state.entries.size) {
+        if (state == null || index == null || index.toUInt() >= state.entryCount) {
             // Nothing queued (stopped, or a play that failed): end, unless a play is on its way.
             if (!Playback.keepsGoing) end()
             return

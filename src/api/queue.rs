@@ -2,6 +2,9 @@
 //! after the other, with next and previous, repeat, shuffle and editing. It works with
 //! item ids; files and where to start come from the library, which also keeps progress.
 //!
+//! A state holds how many entries there are, not the entries: a queue can hold thousands
+//! and states come 4 times a second. Ask `entries()` when `entries_revision` changes.
+//!
 //! Commands answer once they are done, and their result is in `state()` by then. The
 //! listener runs on the queue's own thread: it must hand states to the UI and return;
 //! a command sent from inside it is refused at once (it would wait for itself).
@@ -40,13 +43,19 @@ pub struct SkippedEntry {
     pub problem: Problem,
 }
 
-/// Everything about the queue. Replace what is shown with a newer revision.
+/// Everything about the queue but its entries. Replace what is shown with a newer revision.
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
 pub struct QueueState {
     pub revision: i64,
-    pub entries: Vec<QueueEntry>,
-    /// Index into `entries` of the current one.
+    /// How many entries the queue has.
+    pub entry_count: u32,
+    /// Goes up when the entries change (added, removed, moved, a new queue): then ask
+    /// `entries()` again.
+    pub entries_revision: i64,
+    /// Index into the entries of the current one.
     pub current: Option<u32>,
+    /// The current entry's key.
+    pub current_key: Option<i64>,
     pub repeat: RepeatMode,
     pub shuffle: bool,
     /// The engine's state for the current entry (position, duration, status).
@@ -65,6 +74,13 @@ pub struct QueueState {
     pub has_next: bool,
     /// Whether previous goes to another entry (else it starts the current one over).
     pub has_previous: bool,
+}
+
+/// The queue's entries in their list order, with the `entries_revision` they belong to.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct QueueEntries {
+    pub revision: i64,
+    pub entries: Vec<QueueEntry>,
 }
 
 /// The current entry as a lock screen shows it.
@@ -237,6 +253,12 @@ impl CoreQueue {
         })?)
     }
 
+    /// Plays the entry with this key right after the current one, shuffled or not (it
+    /// also moves just below the current one in the list).
+    pub fn play_next(&self, entry_key: i64) -> Result<(), ApiError> {
+        Ok(self.queue.command(Command::PlayNext(key(entry_key)?))?)
+    }
+
     /// Ends playback and empties the queue.
     pub fn stop(&self) -> Result<(), ApiError> {
         Ok(self.queue.command(Command::Stop)?)
@@ -246,17 +268,12 @@ impl CoreQueue {
         self.queue.state().into()
     }
 
-    pub fn set_listener(&self, listener: Box<dyn QueueListener>) {
-        self.queue
-            .set_listener(move |state| listener.on_state(state.into()));
-    }
-}
-
-impl From<queue::QueueState> for QueueState {
-    fn from(state: queue::QueueState) -> Self {
-        let signed = |value: u64| value.min(i64::MAX as u64) as i64;
-        QueueState {
-            revision: signed(state.revision),
+    /// The entries, in their list order (what a queue screen shows; the current one is at
+    /// `current`).
+    pub fn entries(&self) -> QueueEntries {
+        let state = self.queue.state();
+        QueueEntries {
+            revision: signed(state.entries_revision),
             entries: state
                 .entries
                 .iter()
@@ -265,9 +282,32 @@ impl From<queue::QueueState> for QueueState {
                     item_id: slot.item_id,
                 })
                 .collect(),
+        }
+    }
+
+    pub fn set_listener(&self, listener: Box<dyn QueueListener>) {
+        self.queue
+            .set_listener(move |state| listener.on_state(state.into()));
+    }
+}
+
+fn signed(value: u64) -> i64 {
+    value.min(i64::MAX as u64) as i64
+}
+
+impl From<queue::QueueState> for QueueState {
+    fn from(state: queue::QueueState) -> Self {
+        QueueState {
+            revision: signed(state.revision),
+            entry_count: state.entries.len().min(u32::MAX as usize) as u32,
+            entries_revision: signed(state.entries_revision),
             current: state
                 .current
                 .map(|index| index.min(u32::MAX as usize) as u32),
+            current_key: state
+                .current
+                .and_then(|index| state.entries.get(index))
+                .map(|slot| signed(slot.key)),
             repeat: match state.repeat {
                 Repeat::Off => RepeatMode::Off,
                 Repeat::All => RepeatMode::All,

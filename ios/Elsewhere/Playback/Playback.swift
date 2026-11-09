@@ -195,7 +195,7 @@ final class Playback: ObservableObject {
     /// play is on its way: the queue's first state is empty, and comes after the activation.
     private func settle() {
         guard let state, starting == 0, !resumeAfterInterruption, !state.wantsPlay,
-              state.finished || state.entries.isEmpty
+              state.finished || state.entryCount == 0
         else { return }
         deactivate()
     }
@@ -346,7 +346,7 @@ final class Playback: ObservableObject {
 
     private func showNowPlaying() {
         let center = MPNowPlayingInfoCenter.default()
-        guard let state, let index = state.current, Int(index) < state.entries.count else {
+        guard let state, let index = state.current, index < state.entryCount else {
             if center.nowPlayingInfo != nil { center.nowPlayingInfo = nil }
             shownInfo = nil
             return
@@ -359,7 +359,7 @@ final class Playback: ObservableObject {
         let elapsed = Double(playback.positionMs) / 1000
         let time = ProcessInfo.processInfo.systemUptime
         if let shown = shownInfo, shown.now == now, shown.duration == playback.durationMs,
-           shown.cover === cover, shown.index == index, shown.count == state.entries.count,
+           shown.cover === cover, shown.index == index, shown.count == Int(state.entryCount),
            shown.rate == rate {
             let off = abs(shown.elapsed + (time - shown.at) * shown.rate - elapsed)
             if rate == 0 ? off == 0 : off < 1 { return }
@@ -370,7 +370,7 @@ final class Playback: ObservableObject {
             MPNowPlayingInfoPropertyPlaybackRate: rate,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: 1.0,
             MPNowPlayingInfoPropertyPlaybackQueueIndex: Int(index),
-            MPNowPlayingInfoPropertyPlaybackQueueCount: state.entries.count,
+            MPNowPlayingInfoPropertyPlaybackQueueCount: Int(state.entryCount),
             MPNowPlayingInfoPropertyMediaType: (now?.media == .video ? MPNowPlayingInfoMediaType.video : .audio).rawValue,
         ]
         if let artist = now?.artist { info[MPMediaItemPropertyArtist] = artist }
@@ -383,7 +383,7 @@ final class Playback: ObservableObject {
         }
         center.nowPlayingInfo = info
         shownInfo = ShownInfo(now: now, duration: playback.durationMs, cover: cover, index: index,
-                              count: state.entries.count, rate: rate, elapsed: elapsed, at: time)
+                              count: Int(state.entryCount), rate: rate, elapsed: elapsed, at: time)
     }
 
     // MARK: The cover
