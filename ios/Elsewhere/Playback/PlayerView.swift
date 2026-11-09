@@ -214,7 +214,7 @@ private struct FullScreenVideo: View {
                 VideoView(width: state.videoWidth.map(Int.init), height: state.videoHeight.map(Int.init))
                     .ignoresSafeArea()
             }
-            videoState(state.videoShown)
+            videoState(state.videoShown, id: "full-video-state")
             if controls {
                 VStack {
                     Spacer()
@@ -246,13 +246,13 @@ private struct FullScreenVideo: View {
 }
 
 /// Says to screen readers (and the UI tests) whether the picture shows.
-private func videoState(_ shown: Bool) -> some View {
+private func videoState(_ shown: Bool, id: String = "video-state") -> some View {
     Color.clear
         .frame(width: 1, height: 1)
         .accessibilityElement()
         .accessibilityLabel("Video")
         .accessibilityValue(shown ? "shown" : "off")
-        .accessibilityIdentifier("video-state")
+        .accessibilityIdentifier(id)
 }
 
 /// The position slider and the times; while dragging, the slider follows the finger only.

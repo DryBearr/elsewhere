@@ -190,7 +190,7 @@ final class MusicUITests: XCTestCase {
         app.buttons["full-screen"].tap()
         let full = app.otherElements["full-video"]
         wait(full, "exists == true", in: app)
-        wait(picture, "value == 'shown'", timeout: 20, in: app)
+        wait(app.descendants(matching: .any)["full-video-state"], "value == 'shown'", timeout: 20, in: app)
         full.tap()
         app.buttons["leave-full-screen"].tap()
         wait(full, "exists == false", in: app)
