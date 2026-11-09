@@ -68,6 +68,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import uniffi.elsewhere.ItemSummary
 import uniffi.elsewhere.PlayerStatus
@@ -276,10 +277,17 @@ private fun Video(queue: QueueState, modifier: Modifier) {
 private fun VideoSurfaceView(playing: Boolean, modifier: Modifier) {
     // What the view went through, for the UI tests (and screen readers: "video, attached").
     var status by remember { mutableStateOf("") }
+    var core by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        while (true) {
+            core = if (Playback.target == 0L) "no queue" else VideoSurface.describe(Playback.target)
+            delay(1000)
+        }
+    }
     AndroidView(
         factory = { context -> VideoView(context) { said -> status = said } },
         update = { view -> view.keepScreenOn = playing },
-        modifier = modifier.testTag("video").semantics { stateDescription = status },
+        modifier = modifier.testTag("video").semantics { stateDescription = "$status | $core" },
     )
 }
 

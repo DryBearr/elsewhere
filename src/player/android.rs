@@ -21,6 +21,7 @@ const JNI_VERSION_1_6: c_int = 0x0001_0006;
 /// Indexes into JNI's function table (jni.h).
 const NEW_GLOBAL_REF: usize = 21;
 const DELETE_GLOBAL_REF: usize = 22;
+const NEW_STRING_UTF: usize = 167;
 
 /// A JNIEnv*: a pointer to the pointer to JNI's function table.
 type Env = *mut *const *const c_void;
@@ -174,6 +175,38 @@ pub extern "system" fn Java_io_github_drybearr_elsewhere_playback_VideoSurface_d
         // SAFETY: called by Java on its thread with its JNIEnv.
         unsafe { let_go(env, target, video.as_ref()) };
     }));
+}
+
+/// VideoSurface.describe(target): what the core and mpv say about video, as a string (for
+/// the apps' tests: the Java VM handed over, the log, the players, mpv's video).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_drybearr_elsewhere_playback_VideoSurface_describe(
+    env: Env,
+    _class: Object,
+    target: i64,
+) -> Object {
+    let text = catch_unwind(AssertUnwindSafe(|| {
+        let video = by_target(target)
+            .map_or_else(|| format!("no player {target}"), |video| video.describe());
+        format!(
+            "vm={} libmpv={} handed={} log={} surfaces={} {video}",
+            !VM.load(Ordering::SeqCst).is_null(),
+            !LIBMPV.load(Ordering::SeqCst).is_null(),
+            HANDED.load(Ordering::SeqCst),
+            if logs::to_file() {
+                "file"
+            } else {
+                "not started"
+            },
+            lock().len(),
+        )
+    }))
+    .unwrap_or_else(|_| "describe panicked".to_owned());
+    let text = std::ffi::CString::new(text.replace('\0', " ")).unwrap_or_default();
+    // SAFETY: NewStringUTF(JNIEnv*, const char*) -> jstring, with a valid C string.
+    let new_string: extern "system" fn(Env, *const c_char) -> Object =
+        unsafe { std::mem::transmute(jni(env, NEW_STRING_UTF)) };
+    new_string(env, text.as_ptr())
 }
 
 /// VideoSurface.resize(target, width, height): the Surface's new size.

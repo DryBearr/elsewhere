@@ -53,7 +53,8 @@ object Playback {
 
     /** The engine's number for VideoSurface, once the queue is made (0 before). */
     @Volatile
-    private var target = 0L
+    var target = 0L
+        private set
 
     /** The last video events, newest last (for the self-test and the UI tests' failures). */
     val videoEvents = java.util.concurrent.ConcurrentLinkedDeque<String>()

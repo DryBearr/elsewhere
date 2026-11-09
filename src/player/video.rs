@@ -183,8 +183,33 @@ impl Video {
             .mpv
             .set_string("vid", "auto")
             .map_err(|code| mpv_problem("turning video on", code, &inner));
-        crate::logs::info("player", format!("{}: video on, into a surface", inner.name)).write();
+        crate::logs::info(
+            "player",
+            format!("{}: video on, into a surface", inner.name),
+        )
+        .write();
         on
+    }
+
+    /// What mpv says about its video now, as one line (for the apps' tests).
+    pub fn describe(&self) -> String {
+        let Ok(inner) = self.inner() else {
+            return "player closed".to_owned();
+        };
+        let attached = lock(&inner.video).attached;
+        let mpv = &inner.mpv;
+        let text = |name: &str| mpv.get_string(name).unwrap_or_else(|| "-".to_owned());
+        format!(
+            "{}: {attached:?} vo={} current-vo={} vid={} wid={} vo-configured={} video={}x{}",
+            inner.name,
+            text("vo"),
+            text("current-vo"),
+            text("vid"),
+            text("wid"),
+            text("vo-configured"),
+            text("video-params/w"),
+            text("video-params/h"),
+        )
     }
 
     /// The Android Surface's size changed (rotation, split screen).

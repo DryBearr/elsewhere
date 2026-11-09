@@ -25,6 +25,10 @@ object VideoSurface {
 
     @JvmStatic
     external fun resize(target: Long, width: Int, height: Int)
+
+    /** What the core and mpv say about video, as one line (for tests). */
+    @JvmStatic
+    external fun describe(target: Long): String
 }
 
 /**

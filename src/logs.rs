@@ -127,6 +127,11 @@ fn sink() -> MutexGuard<'static, Sink> {
 
 /// Starts writing to `<dir>` (made if needed), writes the lines that waited, and installs
 /// the panic hook. Calling it again moves the log to the new folder.
+/// Whether lines go to the log file yet (false until `init`).
+pub fn to_file() -> bool {
+    matches!(&*sink(), Sink::File { .. })
+}
+
 pub fn init(dir: &Path) {
     let _ = fs::create_dir_all(dir);
     let size = fs::metadata(dir.join("elsewhere.log")).map_or(0, |meta| meta.len());
