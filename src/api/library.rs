@@ -188,6 +188,18 @@ pub fn collection_items(
     })
 }
 
+/// List rows for these item ids, in the same order (none for an id no longer in the
+/// library): what a queue screen shows. At most 500 at once.
+#[uniffi::export]
+pub fn items(ids: Vec<i64>) -> Result<Vec<Option<ItemSummary>>, ApiError> {
+    Ok(core()?
+        .library
+        .items(&ids)?
+        .into_iter()
+        .map(|found| found.map(summary))
+        .collect())
+}
+
 #[uniffi::export]
 pub fn item(id: i64) -> Result<ItemDetail, ApiError> {
     let detail = core()?.library.item(id)?;
@@ -220,6 +232,15 @@ pub fn item_file(id: i64) -> Result<String, ApiError> {
         .item_file(id)?
         .to_string_lossy()
         .into_owned())
+}
+
+/// Adds a file already inside a tab's folder (`<media>/<tab name>/...`) to the library;
+/// returns its item id (the same file again: the same id).
+#[uniffi::export]
+pub fn add_file(tab_id: i64, path: String) -> Result<i64, ApiError> {
+    Ok(core()?
+        .library
+        .add_file(tab_id, std::path::Path::new(&path))?)
 }
 
 /// Where to start an item.
@@ -271,7 +292,7 @@ pub fn set_rating(item_id: i64, rating: Option<i64>) -> Result<(), ApiError> {
     Ok(core()?.library.set_rating(item_id, rating)?)
 }
 
-fn media(media: library::Media) -> MediaKind {
+pub(super) fn media(media: library::Media) -> MediaKind {
     match media {
         library::Media::Audio => MediaKind::Audio,
         library::Media::Video => MediaKind::Video,

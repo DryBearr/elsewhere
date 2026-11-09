@@ -247,9 +247,12 @@ fn a_queue_where_nothing_plays_stops_with_a_problem() {
     );
     assert_ne!(end.playback.status, Status::Playing);
     // Thousands of missing files: no pile-up, just the same answer.
+    // In one transaction: 3000 separate commits would each wait for the disk.
+    shelf.db.execute_batch("BEGIN").unwrap();
     let many: Vec<i64> = (0..3000)
         .map(|n| shelf.item(&format!("Gone {n}"), None))
         .collect();
+    shelf.db.execute_batch("COMMIT").unwrap();
     let started = Instant::now();
     play(&queue, &many, 0);
     let end = wait(&queue, "stopped again", |state| {
@@ -378,7 +381,12 @@ fn shuffle_plays_every_entry_once() {
     sorted.sort_unstable();
     assert_eq!(sorted, items, "every one once: {order:?}");
     for id in items {
-        assert_eq!(shelf.plays(id), 1);
+        let progress = shelf.library.item(id).unwrap().summary.progress;
+        assert_eq!(
+            shelf.plays(id),
+            1,
+            "item {id}: {progress:?}, played {order:?}, end {end:?}"
+        );
     }
 }
 
@@ -915,4 +923,236 @@ fn seeking_while_a_file_opens_answers_and_changes_nothing() {
     wait(&queue, "past 4 s", |state| {
         state.playback.position_ms >= 3_900
     });
+}
+
+// --- What lock screens read --------------------------------------------------------
+
+#[test]
+fn now_playing_follows_the_current_entry() {
+    let shelf = shelf("now-playing");
+    let first = shelf.item("First song", Some("long.m4a"));
+    let gone = shelf.item("Gone song", None);
+    let second = shelf.item("Second song", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    play(&queue, &[first, gone, second], 0);
+    let now = queue.state().now_playing.unwrap();
+    assert_eq!((now.item_id, now.title.as_str()), (first, "First song"));
+    assert_eq!(now.media, elsewhere::library::Media::Audio);
+    // Next skips the gone one: what shows is what plays.
+    queue.command(Command::Next).unwrap();
+    let now = queue.state().now_playing.unwrap();
+    assert_eq!((now.item_id, now.title.as_str()), (second, "Second song"));
+    queue.command(Command::Stop).unwrap();
+    assert_eq!(queue.state().now_playing, None, "nothing after stop");
+    // A queue where nothing plays shows nothing (not the last queue's entry).
+    play(&queue, &[first], 0);
+    play(&queue, &[gone], 0);
+    let state = wait(&queue, "stopped", |state| state.finished);
+    assert_eq!(state.now_playing, None);
+}
+
+#[test]
+fn wants_play_is_what_the_play_button_shows() {
+    let shelf = shelf("wants-play");
+    let song = shelf.item("Song", Some("song.m4a"));
+    let long = shelf.item("Long", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    assert!(!queue.state().wants_play, "nothing queued");
+    play(&queue, &[long], 0);
+    assert!(
+        queue.state().wants_play,
+        "right away, also while the file opens"
+    );
+    queue.command(Command::Pause).unwrap();
+    assert!(!queue.state().wants_play);
+    queue.command(Command::Resume).unwrap();
+    assert!(queue.state().wants_play);
+    queue
+        .command(Command::Play {
+            items: vec![song],
+            start: 0,
+            autoplay: false,
+        })
+        .unwrap();
+    assert!(!queue.state().wants_play, "opened paused");
+    queue.command(Command::SetSpeed(4.0)).unwrap();
+    queue.command(Command::Resume).unwrap();
+    let end = wait(&queue, "finished", |state| state.finished);
+    assert!(!end.wants_play, "after the end nothing plays");
+    queue.command(Command::Stop).unwrap();
+    assert!(!queue.state().wants_play);
+}
+
+#[test]
+fn volume_goes_down_and_up_within_range() {
+    let shelf = shelf("volume");
+    let long = shelf.item("Long", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    play(&queue, &[long], 0);
+    queue.command(Command::SetVolume(20.0)).unwrap();
+    wait(&queue, "volume 20", |state| state.playback.volume == 20.0);
+    queue.command(Command::SetVolume(150.0)).unwrap();
+    wait(&queue, "volume 100", |state| state.playback.volume == 100.0);
+    queue.command(Command::SetVolume(-1.0)).unwrap();
+    wait(&queue, "volume 0", |state| state.playback.volume == 0.0);
+    assert_eq!(
+        queue
+            .command(Command::SetVolume(f64::NAN))
+            .unwrap_err()
+            .kind,
+        Kind::Input
+    );
+}
+
+#[test]
+fn the_entries_revision_moves_only_when_the_entries_change() {
+    let shelf = shelf("entries-revision");
+    let a = shelf.item("A", Some("long.m4a"));
+    let b = shelf.item("B", Some("long.m4a"));
+    let (queue, seen) = queue(&shelf);
+    let start = queue.state().entries_revision;
+    play(&queue, &[a, b], 0);
+    let played = queue.state();
+    assert!(played.entries_revision > start, "a new queue");
+    wait(&queue, "playing A", |state| {
+        state.playback.status == Status::Playing
+    });
+    // Playing on, pausing, seeking, repeat, shuffle and next leave the entries as they are.
+    thread::sleep(Duration::from_millis(600));
+    for command in [
+        Command::Pause,
+        Command::Seek(1000),
+        Command::SetRepeat(Repeat::All),
+        Command::SetShuffle(true),
+        Command::SetShuffle(false),
+        Command::Next,
+        Command::Resume,
+    ] {
+        queue.command(command).unwrap();
+    }
+    let same = queue.state();
+    assert_eq!(same.entries_revision, played.entries_revision, "{same:?}");
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|state| state.revision > played.revision)
+            .count()
+            > 3,
+        "states came meanwhile"
+    );
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|state| state.revision >= played.revision)
+            .all(|state| state.entries_revision == played.entries_revision),
+        "no state on the way said otherwise"
+    );
+    // Each change to the entries moves it once more.
+    let mut last = played.entries_revision;
+    let key = |state: &QueueState, index: usize| state.entries[index].key;
+    for change in ["add", "move", "remove", "stop"] {
+        let state = queue.state();
+        let command = match change {
+            "add" => Command::Add(vec![a]),
+            "move" => Command::Move {
+                key: key(&state, 2),
+                to: 0,
+            },
+            "remove" => Command::Remove(key(&state, 0)),
+            _ => Command::Stop,
+        };
+        queue.command(command).unwrap();
+        let now = queue.state().entries_revision;
+        assert_eq!(now, last + 1, "{change}");
+        last = now;
+    }
+    // Moving an entry to where it is changes nothing.
+    play(&queue, &[a, b], 0);
+    let state = queue.state();
+    queue
+        .command(Command::Move {
+            key: key(&state, 1),
+            to: 1,
+        })
+        .unwrap();
+    assert_eq!(queue.state().entries_revision, state.entries_revision);
+}
+
+#[test]
+fn play_next_on_an_ended_queue_plays_that_entry() {
+    let shelf = shelf("play-next-ended");
+    let a = shelf.item("A", Some("song.m4a"));
+    let b = shelf.item("B", Some("song.m4a"));
+    let (queue, _) = queue(&shelf);
+    queue.command(Command::SetSpeed(4.0)).unwrap();
+    play(&queue, &[a, b], 0);
+    let end = wait(&queue, "the end", |state| state.finished);
+    assert!(!end.has_next);
+    let first = end.entries[0].key;
+    queue.command(Command::PlayNext(first)).unwrap();
+    let state = queue.state();
+    assert!(!state.finished, "{state:?}");
+    assert_eq!(current_item(&state), Some(a));
+    // A moved after B, the one that ended: it is the last now, and plays to its end.
+    let order: Vec<i64> = state.entries.iter().map(|slot| slot.item_id).collect();
+    assert_eq!(order, [b, a]);
+    assert!(!state.has_next);
+    let end = wait(&queue, "the end again", |state| state.finished);
+    assert_eq!(current_item(&end), Some(a));
+    // Play next of the entry that just ended changes nothing.
+    queue.command(Command::PlayNext(first)).unwrap();
+    assert!(queue.state().finished);
+}
+
+#[test]
+fn reloading_the_sound_output_plays_on() {
+    let shelf = shelf("reload-audio");
+    let a = shelf.item("A", Some("long.m4a"));
+    let b = shelf.item("B", Some("song.m4a"));
+    let (queue, _) = queue(&shelf);
+    // An empty queue: nothing to reload.
+    queue.command(Command::ReloadAudio).unwrap();
+    play(&queue, &[a, b], 0);
+    wait(&queue, "playing A", |state| {
+        state.current == Some(0) && state.playback.status == Status::Playing
+    });
+    queue.command(Command::ReloadAudio).unwrap();
+    let state = queue.state();
+    assert!(state.wants_play);
+    assert_eq!(state.current, Some(0));
+    // The same entry plays on, then the next one.
+    let end = wait(&queue, "finished", |state| state.finished);
+    assert_eq!(end.current, Some(1));
+    assert!(end.skipped.is_empty(), "{:?}", end.skipped);
+}
+
+#[test]
+fn previous_entry_goes_back_however_far_in() {
+    let shelf = shelf("previous-entry");
+    let a = shelf.item("A", Some("long.m4a"));
+    let b = shelf.item("B", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    assert_eq!(
+        queue.command(Command::PreviousEntry).unwrap_err().kind,
+        Kind::Input,
+        "nothing queued"
+    );
+    play(&queue, &[a, b], 1);
+    wait(&queue, "B past 3.2 s", |state| {
+        state.playback.position_ms > 3_200
+    });
+    queue.command(Command::PreviousEntry).unwrap();
+    assert_eq!(
+        current_item(&queue.state()),
+        Some(a),
+        "to A, though 3 s into B"
+    );
+    queue.command(Command::PreviousEntry).unwrap();
+    assert_eq!(
+        current_item(&queue.state()),
+        Some(a),
+        "the first stays the first"
+    );
 }

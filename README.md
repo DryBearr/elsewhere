@@ -109,6 +109,7 @@ Tests break things on purpose: delivery crashes, failing saves, a stuck and a st
 - **One thread owns it:** app commands and engine states go through one channel and are handled in order; the thread runs supervised. A command's result is in `state()` as soon as `command` returns.
 - **The library decides where to start** (songs from the top, videos from their resume point) and keeps the progress: saved on pause, every 10 s, when an entry ends or is left, and on stop. Plays count once.
 - **Order rules** (`src/queue/order.rs`, tested without the engine): shuffle plays every entry once and keeps the current one; repeat one replays it when it ends but a skip moves on; repeat all starts over, reshuffled, never with the entry that just played; previous restarts an entry after 3 s.
+- **For the apps:** `CoreQueue` (play items or `play_collection(playlist, start_entry)`, resume, pause, next, previous, seek, jump, repeat, shuffle, speed, add, remove, move, stop, `state`, a `QueueListener`). Entry keys are the queue's own; negative or unknown ones are refused, and so are unknown, empty and smart playlists. A command sent from inside the listener is refused at once. Close a queue off the main thread: it waits up to 2 s for the last save.
 - **Robust:** what cannot be played is skipped with its reason, in a loop (thousands of missing files stop cleanly); when nothing can be played the queue stops with a Problem; late engine states of the previous file are ignored.
 
 ## Player module

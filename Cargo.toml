@@ -60,6 +60,14 @@ required-features = ["player"]
 name = "queue"
 required-features = ["player"]
 
+[[test]]
+name = "video"
+required-features = ["player"]
+
+[[test]]
+name = "api_queue"
+required-features = ["playlists", "player"]
+
 # Smaller phone builds: no debug info in the Rust core. Panics must unwind (never abort):
 # the core catches them at its boundaries and heals (src/health.rs).
 [profile.release]

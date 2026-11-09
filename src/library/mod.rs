@@ -386,6 +386,34 @@ impl Library {
         })?
     }
 
+    /// List rows for these item ids, in the same order: None for an id that is not (or no
+    /// longer) in the library. At most MAX_PAGE ids at once (a screen asks for what shows).
+    pub fn items(&self, ids: &[i64]) -> Result<Vec<Option<ItemSummary>>, Problem> {
+        if ids.len() > MAX_PAGE {
+            return Err(refused(
+                "Ask for fewer items at once.",
+                format!("{} ids, at most {MAX_PAGE}", ids.len()),
+            ));
+        }
+        let media = self.media.clone();
+        self.read("reading items", |db| {
+            let mut rows = Vec::with_capacity(ids.len());
+            for &id in ids {
+                let found = db
+                    .prepare_cached(&format!(
+                        "SELECT {SUMMARY} FROM item i {SUMMARY_JOINS} WHERE i.id = ?1"
+                    ))?
+                    .query_row([id], |row| summary_row(row, 0, &media))
+                    .optional()?;
+                rows.push(match found {
+                    Some(summary) => Some(with_artists(db, summary)?),
+                    None => None,
+                });
+            }
+            Ok(rows)
+        })
+    }
+
     /// The file to play or open: the real path, after checking that it exists, is a
     /// regular file, and lies inside the item's library folder and the media folder.
     pub fn item_file(&self, id: i64) -> Result<PathBuf, Problem> {

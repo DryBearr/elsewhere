@@ -100,6 +100,24 @@ fn page(path: &str) -> Option<(&'static str, String)> {
             "<html><head><title>Nothing</title></head><body>No media here.</body></html>"
                 .to_owned(),
         )),
+        // The same page scripts/selftest_server.py gives the apps' UI tests: <audio> tags.
+        "/music-playlist.html" => Some((
+            "text/html; charset=utf-8",
+            "<html><head><title>Music Playlist</title></head><body>\n\
+             <audio src=\"/media/long.m4a\"></audio>\n\
+             <audio src=\"/media/song.m4a\"></audio>\n\
+             </body></html>"
+                .to_owned(),
+        )),
+        "/real-playlist.html" => playlist(
+            "Real Playlist",
+            &[
+                "/media/song.m4a",
+                "/media/song.opus",
+                "/media/long.m4a",
+                "/media/clip.webm",
+            ],
+        ),
         "/library-playlist.html" => playlist(
             "Library Playlist",
             &["/Lib%20-%20One.mp4", "/Lib%20-%20Two.mp4"],
@@ -204,7 +222,13 @@ fn serve(mut stream: TcpStream) {
         return;
     }
 
+    // Real media from tests/media, for tests that play what they saved.
+    let real = path
+        .strip_prefix("/media/")
+        .filter(|name| !name.contains('/') && !name.contains(".."))
+        .and_then(|name| fs::read(test_media().join(name)).ok());
     let (size, slow, broken) = match path {
+        _ if real.is_some() => (real.as_ref().map_or(0, Vec::len), false, false),
         "/slow.mp4" => (SLOW_SIZE, true, false),
         "/broken.mp4" => (SIZE, false, true),
         "/missing.mp4" => (0, false, false),
@@ -217,7 +241,7 @@ fn serve(mut stream: TcpStream) {
         return;
     }
 
-    let data = body(size);
+    let data = real.unwrap_or_else(|| body(size));
     let (start, end) = match range {
         Some((start, end)) => (start, end.unwrap_or(size - 1).min(size - 1)),
         None => (0, size - 1),
@@ -309,4 +333,12 @@ pub fn kind_of<T>(result: &Result<T, ApiError>) -> Option<ProblemKind> {
         .as_ref()
         .err()
         .map(|ApiError::Failed { problem }| problem.kind)
+}
+
+/// The real media files the tests play: PLAYER_TEST_MEDIA on an emulator or simulator,
+/// else tests/media.
+pub fn test_media() -> PathBuf {
+    std::env::var_os("PLAYER_TEST_MEDIA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/media"))
 }

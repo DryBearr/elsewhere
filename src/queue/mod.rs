@@ -57,6 +57,9 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 pub struct QueueState {
     pub revision: u64,
     pub entries: Vec<Slot>,
+    /// Goes up only when `entries` change (added, removed, moved, a new queue), so a list
+    /// of thousands is sent to the apps only then.
+    pub entries_revision: u64,
     /// Index into `entries` of the current one.
     pub current: Option<usize>,
     pub repeat: Repeat,
@@ -70,6 +73,27 @@ pub struct QueueState {
     /// The entries skipped since the queue was set, with why (the newest 100), so a list
     /// can mark them.
     pub skipped: Vec<Skipped>,
+    /// Whether playback should be going (also while a file opens): what a lock screen's
+    /// play/pause button shows.
+    pub wants_play: bool,
+    /// What the current entry is, for lock screens and notifications.
+    pub now_playing: Option<NowPlaying>,
+    /// Whether next has somewhere to go (a later entry, or round again with repeat).
+    pub has_next: bool,
+    /// Whether previous can go to another entry (else it starts the current one over).
+    pub has_previous: bool,
+}
+
+/// The current entry as a lock screen shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NowPlaying {
+    pub item_id: i64,
+    pub title: String,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    /// An image file inside the media folder.
+    pub cover: Option<std::path::PathBuf>,
+    pub media: crate::library::Media,
 }
 
 /// An entry that could not be played.
@@ -98,18 +122,27 @@ pub enum Command {
     Next,
     /// Starts the entry over, or this early in it, goes to the one before.
     Previous,
+    /// Goes to the entry before, however far into this one (for system controls that make
+    /// the start-over decision themselves).
+    PreviousEntry,
     Seek(i64),
     /// Makes the entry with this key current.
     Jump(u64),
     SetRepeat(Repeat),
     SetShuffle(bool),
     SetSpeed(f64),
+    /// 0 to 100 (for example lower while a navigation voice speaks).
+    SetVolume(f64),
+    /// Builds the sound output again (iOS after its media services were reset).
+    ReloadAudio,
     Add(Vec<i64>),
     Remove(u64),
     Move {
         key: u64,
         to: usize,
     },
+    /// Plays the entry with this key right after the current one (shuffled too).
+    PlayNext(u64),
     /// Ends playback and empties the queue.
     Stop,
 }
@@ -132,12 +165,14 @@ struct Shared {
 pub struct QueuePlayer {
     messages: Sender<Message>,
     shared: Arc<Shared>,
+    video: crate::player::Video,
 }
 
 impl QueuePlayer {
     /// A new playlist player with its own engine, playing items of `library`.
     pub fn new(library: &'static Library) -> Result<QueuePlayer, Problem> {
         let player = Player::new()?;
+        let video = player.video();
         let (messages, received) = mpsc::channel();
         let engine = messages.clone();
         player.set_listener(move |state| {
@@ -147,6 +182,7 @@ impl QueuePlayer {
             state: Mutex::new(QueueState {
                 revision: 1,
                 entries: Vec::new(),
+                entries_revision: 1,
                 current: None,
                 repeat: Repeat::Off,
                 shuffle: false,
@@ -154,6 +190,10 @@ impl QueuePlayer {
                 finished: false,
                 problem: None,
                 skipped: Vec::new(),
+                wants_play: false,
+                now_playing: None,
+                has_next: false,
+                has_previous: false,
             }),
             listener: Mutex::new(None),
         });
@@ -171,6 +211,7 @@ impl QueuePlayer {
             finished: false,
             problem: None,
             skipped: Vec::new(),
+            now: None,
         }));
         let received = Arc::new(Mutex::new(received));
         let thread_shared = Arc::clone(&shared);
@@ -181,7 +222,18 @@ impl QueuePlayer {
         );
         health::supervise(name, move || run(&actor, &received, &thread_shared))
             .map_err(|err| Problem::bug(format!("could not start the queue thread: {err}")))?;
-        Ok(QueuePlayer { messages, shared })
+        Ok(QueuePlayer {
+            messages,
+            shared,
+            video,
+        })
+    }
+
+    /// The engine's video: attach a screen to it to see the picture (player/video.rs).
+    /// It goes straight to the engine, not through the queue's thread: frames are drawn
+    /// many times a second.
+    pub fn video(&self) -> &crate::player::Video {
+        &self.video
     }
 
     /// Runs a command on the player's thread and returns how it went.
@@ -263,6 +315,8 @@ struct Actor {
     finished: bool,
     problem: Option<Problem>,
     skipped: Vec<Skipped>,
+    /// The current entry, as a lock screen shows it.
+    now: Option<NowPlaying>,
 }
 
 /// The player's thread: one message at a time, then the new state goes out.
@@ -300,8 +354,12 @@ fn publish(shared: &Shared, mut state: QueueState) {
     {
         let mut shown = lock(&shared.state);
         state.revision = shown.revision;
+        state.entries_revision = shown.entries_revision;
         if state == *shown {
             return;
+        }
+        if state.entries != shown.entries {
+            state.entries_revision += 1;
         }
         state.revision = shown.revision + 1;
         *shown = state.clone();
@@ -326,6 +384,7 @@ impl Actor {
         QueueState {
             revision: 0,
             entries: self.order.slots().to_vec(),
+            entries_revision: 0,
             current: self.order.current_index(),
             repeat: self.order.repeat,
             shuffle: self.order.shuffle(),
@@ -333,6 +392,10 @@ impl Actor {
             finished: self.finished,
             problem: self.problem.clone(),
             skipped: self.skipped.clone(),
+            wants_play: self.wants_play && !self.finished && self.order.current().is_some(),
+            now_playing: self.now.clone(),
+            has_next: !self.finished && self.order.has_next(),
+            has_previous: self.order.has_previous(),
         }
     }
 
@@ -356,6 +419,7 @@ impl Actor {
                     ));
                 }
                 self.leave_current();
+                self.now = None;
                 self.order.set(&items, start);
                 self.wants_play = autoplay;
                 self.problem = None;
@@ -413,6 +477,16 @@ impl Actor {
                 self.open_current();
                 Ok(())
             }
+            Command::PreviousEntry => {
+                if self.order.current().is_none() {
+                    return Err(nothing_queued());
+                }
+                self.leave_current();
+                self.order.previous();
+                self.failures = 0;
+                self.open_current();
+                Ok(())
+            }
             Command::Seek(position) => {
                 if self.playing.is_none() {
                     return Err(nothing_queued());
@@ -438,6 +512,8 @@ impl Actor {
                 Ok(())
             }
             Command::SetSpeed(speed) => self.player.set_speed(speed),
+            Command::SetVolume(volume) => self.player.set_volume(volume),
+            Command::ReloadAudio => self.player.reload_audio(),
             Command::Add(items) => {
                 if items.is_empty() {
                     return Ok(());
@@ -479,10 +555,23 @@ impl Actor {
                     Err(no_entry(key))
                 }
             }
+            Command::PlayNext(key) => {
+                if !self.order.play_next(key) {
+                    return Err(no_entry(key));
+                }
+                if self.finished && self.order.current().is_some_and(|slot| slot.key != key) {
+                    // The queue had ended: what was asked for comes now (as Add does).
+                    self.order.jump(key);
+                    self.failures = 0;
+                    self.open_current();
+                }
+                Ok(())
+            }
             Command::Stop => {
                 self.leave_current();
                 self.stop_engine();
                 self.order.clear();
+                self.now = None;
                 self.finished = false;
                 self.problem = None;
                 self.skipped.clear();
@@ -623,6 +712,7 @@ impl Actor {
             slot,
             saved_at: Instant::now(),
         });
+        self.now = Some(now_playing(self.library, slot, &file));
         Ok(())
     }
 
@@ -681,4 +771,30 @@ fn no_entry(key: u64) -> Problem {
         "That entry is not in the queue any more.",
         format!("no entry with key {key}"),
     )
+}
+
+/// What a lock screen shows for an entry: from the library, or (if its details cannot be
+/// read) the file's name.
+fn now_playing(library: &Library, slot: Slot, file: &std::path::Path) -> NowPlaying {
+    match library.item(slot.item_id) {
+        Ok(detail) => NowPlaying {
+            item_id: slot.item_id,
+            title: detail.summary.title,
+            artist: detail.summary.artist,
+            album: detail.album,
+            cover: detail.summary.cover,
+            media: detail.summary.media,
+        },
+        Err(_) => NowPlaying {
+            item_id: slot.item_id,
+            title: file.file_stem().map_or_else(
+                || "Untitled".to_owned(),
+                |stem| stem.to_string_lossy().into_owned(),
+            ),
+            artist: None,
+            album: None,
+            cover: None,
+            media: crate::library::Media::Audio,
+        },
+    }
 }

@@ -31,6 +31,8 @@ targets:
         LSSupportsOpeningDocumentsInPlace: true
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # Playback goes on in the background (Elsewhere/Playback).
+        UIBackgroundModes: [audio]
     sources:
       - Elsewhere
       # Swift bindings for the Rust core, written by scripts/ios_rust.sh.
@@ -62,4 +64,19 @@ targets:
             EXPANDED_CODE_SIGN_IDENTITY="-"
           fi
           install_python ../target/ios/Python.xcframework
-    scheme: {}
+    scheme:
+      testTargets:
+        - ElsewhereUITests
+  # The UI tests (MusicUITests.swift): xcodebuild test -only-testing:ElsewhereUITests.
+  ElsewhereUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "16.0"
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: io.github.drybearr.elsewhere.uitests
+      GENERATE_INFOPLIST_FILE: YES
+      SWIFT_VERSION: "5.0"
+    sources:
+      - ElsewhereUITests
+    dependencies:
+      - target: Elsewhere

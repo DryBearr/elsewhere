@@ -91,6 +91,27 @@ type Logs = unsafe extern "C" fn(Ctx, *const c_char) -> c_int;
 type Wait = unsafe extern "C" fn(Ctx, f64) -> *mut RawEvent;
 type ErrorString = unsafe extern "C" fn(c_int) -> *const c_char;
 type Free = unsafe extern "C" fn(*mut c_void);
+type RenderCreate = unsafe extern "C" fn(*mut *mut c_void, Ctx, *mut RenderParam) -> c_int;
+type RenderCallback = unsafe extern "C" fn(*mut c_void);
+type RenderSetCallback = unsafe extern "C" fn(*mut c_void, Option<RenderCallback>, *mut c_void);
+type RenderUpdate = unsafe extern "C" fn(*mut c_void) -> u64;
+type RenderRender = unsafe extern "C" fn(*mut c_void, *mut RenderParam) -> c_int;
+type RenderFree = unsafe extern "C" fn(*mut c_void);
+
+/// render.h: one parameter of the render API (type, then a pointer to its value).
+#[repr(C)]
+struct RenderParam {
+    kind: c_int,
+    data: *mut c_void,
+}
+
+const RENDER_PARAM_INVALID: c_int = 0;
+const RENDER_PARAM_API_TYPE: c_int = 1;
+const RENDER_PARAM_SW_SIZE: c_int = 17;
+const RENDER_PARAM_SW_FORMAT: c_int = 18;
+const RENDER_PARAM_SW_STRIDE: c_int = 19;
+const RENDER_PARAM_SW_POINTER: c_int = 20;
+const RENDER_UPDATE_FRAME: u64 = 1;
 
 /// The library's functions.
 struct Api {
@@ -108,6 +129,11 @@ struct Api {
     wakeup: WithCtx,
     error_string: ErrorString,
     free: Free,
+    render_create: RenderCreate,
+    render_set_callback: RenderSetCallback,
+    render_update: RenderUpdate,
+    render_render: RenderRender,
+    render_free: RenderFree,
 }
 
 /// Only function pointers into a library that stays loaded.
@@ -179,7 +205,14 @@ fn load(names: Vec<String>) -> Result<Api, String> {
         wakeup: symbol!("mpv_wakeup", WithCtx),
         error_string: symbol!("mpv_error_string", ErrorString),
         free: symbol!("mpv_free", Free),
+        render_create: symbol!("mpv_render_context_create", RenderCreate),
+        render_set_callback: symbol!("mpv_render_context_set_update_callback", RenderSetCallback),
+        render_update: symbol!("mpv_render_context_update", RenderUpdate),
+        render_render: symbol!("mpv_render_context_render", RenderRender),
+        render_free: symbol!("mpv_render_context_free", RenderFree),
     };
+    #[cfg(target_os = "android")]
+    super::android::hand_vm(library);
     // SAFETY: a function without arguments.
     let version = unsafe { (api.client_api_version)() };
     if version >> 16 != 2 {
@@ -217,13 +250,15 @@ fn c(text: &str) -> CString {
 }
 
 /// Which property an observation reports (the reply_userdata of mpv_observe_property).
-pub(super) const OBSERVED: [(&str, c_int); 6] = [
+pub(super) const OBSERVED: [(&str, c_int); 7] = [
     ("time-pos", FORMAT_DOUBLE),
     ("duration", FORMAT_DOUBLE),
     ("pause", FORMAT_FLAG),
     ("eof-reached", FORMAT_FLAG),
     ("speed", FORMAT_DOUBLE),
     ("volume", FORMAT_DOUBLE),
+    // The video output has a picture to show (video on, a video playing).
+    ("vo-configured", FORMAT_FLAG),
 ];
 
 /// What `wait` got: a machine event, or something for the event loop itself.
@@ -467,9 +502,121 @@ unsafe fn property_event(id: u64, property: &RawProperty) -> Waited {
             Some(volume) => Event::Volume(volume),
             None => return Waited::Nothing,
         },
+        6 => Event::VideoShown(flag().unwrap_or(false)),
         _ => return Waited::Nothing,
     };
     Waited::Event(event)
+}
+
+/// mpv's software renderer: mpv draws each video frame into memory the app gives it
+/// (iOS shows it; tests look at it). Free it before the handle it came from: it must
+/// go before `mpv_terminate_destroy`.
+pub(super) struct Frames {
+    api: &'static Api,
+    ctx: *mut c_void,
+    /// Called from mpv's threads when a new frame is ready; boxed so its address stays.
+    on_frame: *mut Box<dyn Fn() + Send + Sync>,
+}
+
+unsafe impl Send for Frames {}
+unsafe impl Sync for Frames {}
+
+unsafe extern "C" fn frame_ready(data: *mut c_void) {
+    // SAFETY: `data` is the Frames' boxed callback, freed only after the render context.
+    let on_frame = unsafe { &*data.cast::<Box<dyn Fn() + Send + Sync>>() };
+    // A panic must not cross into mpv's C code.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(on_frame));
+}
+
+impl Handle {
+    /// The software renderer on this handle (vo=libmpv must be set before initialize).
+    pub fn frames(&self, on_frame: Box<dyn Fn() + Send + Sync>) -> Result<Frames, c_int> {
+        let kind = c("sw");
+        let mut params = [
+            RenderParam {
+                kind: RENDER_PARAM_API_TYPE,
+                data: kind.as_ptr().cast_mut().cast(),
+            },
+            RenderParam {
+                kind: RENDER_PARAM_INVALID,
+                data: std::ptr::null_mut(),
+            },
+        ];
+        let mut ctx: *mut c_void = std::ptr::null_mut();
+        // SAFETY: valid handle; the parameter list ends with INVALID; `kind` outlives it.
+        Self::check(unsafe {
+            (self.api.render_create)(&raw mut ctx, self.ctx, params.as_mut_ptr())
+        })?;
+        let on_frame = Box::into_raw(Box::new(on_frame));
+        // SAFETY: a valid render context and a callback that lives as long as it.
+        unsafe { (self.api.render_set_callback)(ctx, Some(frame_ready), on_frame.cast()) };
+        Ok(Frames {
+            api: self.api,
+            ctx,
+            on_frame,
+        })
+    }
+}
+
+impl Frames {
+    /// Whether a new frame is there to draw (call after the callback).
+    pub fn has_new_frame(&self) -> bool {
+        // SAFETY: a valid render context.
+        unsafe { (self.api.render_update)(self.ctx) & RENDER_UPDATE_FRAME != 0 }
+    }
+
+    /// Draws the current frame, scaled to fit with black around, into `pixels`: `width`
+    /// by `height` pixels, 4 bytes each (blue, green, red, unused: "bgr0"), `stride` bytes
+    /// a line.
+    ///
+    /// # Safety
+    /// `pixels` points to at least `stride * height` writable bytes for the whole call.
+    pub unsafe fn draw(
+        &self,
+        width: i32,
+        height: i32,
+        stride: usize,
+        pixels: *mut u8,
+    ) -> Result<(), c_int> {
+        let mut size = [width as c_int, height as c_int];
+        let format = c("bgr0");
+        let mut stride = stride;
+        let mut params = [
+            RenderParam {
+                kind: RENDER_PARAM_SW_SIZE,
+                data: size.as_mut_ptr().cast(),
+            },
+            RenderParam {
+                kind: RENDER_PARAM_SW_FORMAT,
+                data: format.as_ptr().cast_mut().cast(),
+            },
+            RenderParam {
+                kind: RENDER_PARAM_SW_STRIDE,
+                data: (&raw mut stride).cast(),
+            },
+            RenderParam {
+                kind: RENDER_PARAM_SW_POINTER,
+                data: pixels.cast(),
+            },
+            RenderParam {
+                kind: RENDER_PARAM_INVALID,
+                data: std::ptr::null_mut(),
+            },
+        ];
+        // SAFETY: valid context; every parameter points to live data of its type.
+        Handle::check(unsafe { (self.api.render_render)(self.ctx, params.as_mut_ptr()) })
+    }
+}
+
+impl Drop for Frames {
+    fn drop(&mut self) {
+        // SAFETY: the context is valid until here; no callback comes after it is freed,
+        // so the callback can go after it.
+        unsafe {
+            (self.api.render_free)(self.ctx);
+            drop(Box::from_raw(self.on_frame));
+        }
+    }
 }
 
 impl Drop for Handle {

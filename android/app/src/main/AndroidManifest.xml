@@ -3,6 +3,9 @@
 
     <!-- yt-dlp needs the network. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Playback goes on in the background (playback/PlaybackService.kt). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
         android:name=".ElsewhereApplication"
@@ -17,5 +20,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".playback.PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 </manifest>

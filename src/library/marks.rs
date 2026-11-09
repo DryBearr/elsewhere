@@ -322,6 +322,75 @@ impl Library {
         }
     }
 
+    /// Adds a file that is already in a tab's folder (`<media>/<tab name>/...`) to the
+    /// library and returns its item id; the same file again gives the same id. The title is
+    /// the file's name until something better is known.
+    pub fn add_file(&self, category_id: i64, path: &std::path::Path) -> Result<i64, Problem> {
+        let real = match std::fs::canonicalize(path) {
+            Ok(real) => real,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return Err(super::missing(format!("{}: {err}", path.display())));
+            }
+            Err(err) => {
+                return Err(crate::problem::from_io(
+                    &err,
+                    &format!("adding {}", path.display()),
+                ));
+            }
+        };
+        if !real.is_file() {
+            return Err(refused(
+                "Only files can be added.",
+                format!("{} is not a file", real.display()),
+            ));
+        }
+        let media = self.media.clone();
+        let tab: Option<String> = self.read("finding a tab", move |db| {
+            db.prepare_cached("SELECT name FROM category WHERE id = ?1")?
+                .query_row([category_id], |row| row.get(0))
+                .optional()
+        })?;
+        let Some(tab) = tab else {
+            return Err(no_such("tab", category_id));
+        };
+        let root = media.join(&tab);
+        let Ok(relative) = real.strip_prefix(&root).map(std::path::Path::to_owned) else {
+            return Err(refused(
+                "Files for this tab go into its own folder in the app's media folder.",
+                format!("{} is not inside {}", real.display(), root.display()),
+            ));
+        };
+        let (Some(relative), Some(root_text)) = (
+            relative.to_str().map(str::to_owned),
+            root.to_str().map(str::to_owned),
+        ) else {
+            return Err(refused(
+                "That file's name cannot be used.",
+                format!("not UTF-8: {}", real.display()),
+            ));
+        };
+        let title = real.file_stem().map_or_else(
+            || "Untitled".to_owned(),
+            |stem| stem.to_string_lossy().into_owned(),
+        );
+        self.write("adding a file", move |tx| {
+            let library: i64 = tx.query_row(
+                "INSERT INTO library (category_id, root) VALUES (?1, ?2)
+                 ON CONFLICT (root) DO UPDATE SET root = excluded.root RETURNING id",
+                params![category_id, root_text],
+                |row| row.get(0),
+            )?;
+            tx.query_row(
+                "INSERT INTO item (category_id, library_id, kind, path, title, sort_title)
+                 VALUES (?1, ?2, 'entry', ?3, ?4, lower(?4))
+                 ON CONFLICT (library_id, path) DO UPDATE SET missing_since = NULL
+                 RETURNING id",
+                params![category_id, library, relative, title],
+                |row| row.get(0),
+            )
+        })
+    }
+
     fn counted(&self) -> std::sync::MutexGuard<'_, std::collections::HashMap<i64, bool>> {
         self.counted
             .lock()

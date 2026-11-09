@@ -101,6 +101,9 @@ pub fn start(
     // Players open saved media only.
     #[cfg(feature = "player")]
     crate::player::allow_folders(&[std::path::PathBuf::from(&folders.media)]);
+    // iOS has no video output of mpv's own in our build: the app draws frames.
+    #[cfg(all(feature = "player", target_os = "ios"))]
+    crate::player::set_frames_output(true);
 
     let db = Path::new(&folders.data).join("elsewhere.db");
     let jobs = jobs::open_global(&db).map_err(not_ready)?;

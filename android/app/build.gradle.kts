@@ -28,6 +28,8 @@ android {
         versionName = version.joinToString(".")
         // The numbering cargo-apk used for 0.1 and 0.2, so this app installs over them.
         versionCode = (1 shl 24) or (version[0] shl 16) or (version[1] shl 8) or version[2]
+        // The UI tests (src/androidTest): gradle connectedDebugAndroidTest.
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -85,4 +87,11 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     // UniFFI's Kotlin bindings reach the Rust core through JNA.
     implementation("net.java.dev.jna:jna:5.15.0@aar")
+
+    // The UI tests only; none of it goes into the app.
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

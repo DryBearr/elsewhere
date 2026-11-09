@@ -26,6 +26,8 @@ pub(super) enum Event {
     FileLoaded {
         has_video: bool,
         has_audio: bool,
+        /// The picture's width and height as shown (rotation applied), for a video.
+        video_size: Option<(u32, u32)>,
     },
     EndFile {
         entry: i64,
@@ -38,6 +40,8 @@ pub(super) enum Event {
     EndReached(bool),
     Speed(f64),
     Volume(f64),
+    /// Whether the video output shows a picture.
+    VideoShown(bool),
     /// An error line from mpv: kept as the detail of a failure that follows.
     ErrorLog(String),
 }
@@ -87,6 +91,8 @@ impl Machine {
                 volume: 100.0,
                 has_video: false,
                 has_audio: false,
+                video_size: None,
+                video_shown: false,
                 problem: None,
             },
             expected: None,
@@ -120,6 +126,7 @@ impl Machine {
         state.duration_ms = None;
         state.has_video = false;
         state.has_audio = false;
+        state.video_size = None;
         state.problem = None;
         self.expected = None;
         self.started = false;
@@ -146,6 +153,7 @@ impl Machine {
         state.duration_ms = None;
         state.has_video = false;
         state.has_audio = false;
+        state.video_size = None;
         state.problem = None;
         self.expected = None;
         self.started = false;
@@ -174,6 +182,7 @@ impl Machine {
             Event::FileLoaded {
                 has_video,
                 has_audio,
+                video_size,
             } => {
                 // FILE_LOADED carries no entry: it is ours once our entry started.
                 if !self.started || self.expected.is_none() {
@@ -183,6 +192,7 @@ impl Machine {
                 self.loading_since = None;
                 self.state.has_video = has_video;
                 self.state.has_audio = has_audio;
+                self.state.video_size = video_size;
                 self.refresh();
             }
             Event::EndFile {
@@ -250,6 +260,12 @@ impl Machine {
             Event::Volume(volume) => {
                 if volume != self.state.volume {
                     self.state.volume = volume;
+                    self.touch(true);
+                }
+            }
+            Event::VideoShown(shown) => {
+                if shown != self.state.video_shown {
+                    self.state.video_shown = shown;
                     self.touch(true);
                 }
             }
@@ -401,6 +417,7 @@ mod tests {
         machine.apply(Event::FileLoaded {
             has_video: true,
             has_audio: true,
+            video_size: None,
         });
     }
 
@@ -459,6 +476,7 @@ mod tests {
         machine.apply(Event::FileLoaded {
             has_video: true,
             has_audio: true,
+            video_size: None,
         });
         assert_eq!(machine.state().status, Status::Loading);
         assert_eq!(machine.state().position_ms, 0);
@@ -468,12 +486,14 @@ mod tests {
         machine.apply(Event::FileLoaded {
             has_video: false,
             has_audio: true,
+            video_size: None,
         });
         assert_eq!(machine.state().status, Status::Loading);
         machine.apply(Event::StartFile { entry: 2 });
         machine.apply(Event::FileLoaded {
             has_video: false,
             has_audio: true,
+            video_size: None,
         });
         let state = machine.state();
         assert_eq!(
@@ -541,6 +561,7 @@ mod tests {
         machine.apply(Event::FileLoaded {
             has_video: true,
             has_audio: false,
+            video_size: None,
         });
         assert_eq!(
             (machine.state().status, machine.state().position_ms),
