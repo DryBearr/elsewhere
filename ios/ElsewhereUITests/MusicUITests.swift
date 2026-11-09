@@ -326,7 +326,9 @@ final class MusicUITests: XCTestCase {
         search.buttons["Clear text"].tap()
         search.typeText("nothing like this")
         wait(app.staticTexts["Nothing found."], "exists == true", in: app)
-        app.buttons["Cancel"].tap()
+        // Out of the search (newer iOS calls its button Close, older ones Cancel).
+        app.buttons.matching(NSPredicate(format: "label IN {'Cancel', 'Close'} AND identifier != 'close-player'")).firstMatch.tap()
+        wait(app.segmentedControls.buttons["Artists"], "exists == true", in: app)
 
         // The test songs name no artist or album.
         app.segmentedControls.buttons["Artists"].tap()
