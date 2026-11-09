@@ -264,6 +264,8 @@ class MusicTest {
 
     /** Opens the menu with this tag and picks `item`; waits for the menu to close again. */
     private fun menu(tag: String, item: String) {
+        // A queue row may be below the player: into view first.
+        if (tag.startsWith("queue-")) ui.onNodeWithTag("player-list").performScrollToNode(hasTestTag(tag))
         ui.onNodeWithTag(tag).performClick()
         ui.waitUntil(10_000) { ui.onAllNodes(hasText(item)).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithText(item).performClick()
