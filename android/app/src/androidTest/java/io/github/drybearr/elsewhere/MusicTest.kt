@@ -13,6 +13,8 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.printToString
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
@@ -269,13 +271,19 @@ class MusicTest {
         ui.waitForIdle()
     }
 
+    /** What the screen shows (its semantics tree), for failures. */
+    private fun screen(): String = runCatching { ui.onRoot().printToString(maxDepth = 30) }.getOrElse { "(no tree: $it)" }
+
     /** Waits for the queue's rows to hold; if they never do, says what they show. */
     private fun waitRows(what: String, check: () -> Boolean) {
         try {
             ui.waitUntil(15_000, check)
         } catch (e: androidx.compose.ui.test.ComposeTimeoutException) {
             val rows = (0..3).map { "queue-$it=${rowTitle("queue-$it")}" }
-            throw AssertionError("never $what: rows $rows, entries ${Playback.entries.value}, state ${Playback.state.value}", e)
+            throw AssertionError(
+                "never $what: rows $rows, entries ${Playback.entries.value}, state ${Playback.state.value}\nscreen:\n${screen()}",
+                e,
+            )
         }
     }
 
@@ -285,7 +293,9 @@ class MusicTest {
         while (true) {
             val state = Playback.state.value
             if (state != null && check(state)) return
-            assertTrue("never $what: $state", System.currentTimeMillis() < deadline)
+            if (System.currentTimeMillis() >= deadline) {
+                throw AssertionError("never $what: $state\nscreen:\n${screen()}")
+            }
             Thread.sleep(20)
         }
     }
