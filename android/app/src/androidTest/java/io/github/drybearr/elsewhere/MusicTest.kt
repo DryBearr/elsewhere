@@ -1,5 +1,7 @@
 package io.github.drybearr.elsewhere
 
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.hasClickAction
@@ -163,7 +165,7 @@ class MusicTest {
     /** The text of the node with this tag, or null when there is none. */
     private fun tagText(tag: String): String? =
         ui.onAllNodes(hasTestTag(tag)).fetchSemanticsNodes().firstOrNull()
-            ?.config?.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.Text)
+            ?.config?.getOrNull(SemanticsProperties.Text)
             ?.joinToString("") { it.text }
 
     /** Waits for the queue's state to hold. */
