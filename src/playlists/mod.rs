@@ -853,7 +853,10 @@ fn save_cover(url: &str, folder: &Path, cancel: &Cancel) -> Option<PathBuf> {
 
 fn format_args(format: Format, ffmpeg: bool) -> Vec<String> {
     let Format::Video { max_height } = format else {
-        return ["-f", "ba[ext=m4a]/ba"].map(String::from).to_vec();
+        // The best audio-only file, m4a first. A site whose files say nothing about their
+        // streams (a song served as video/mp4, say) has no audio-only format to yt-dlp: then
+        // the best single file, which plays just the same.
+        return ["-f", "ba[ext=m4a]/ba/b"].map(String::from).to_vec();
     };
     // yt-dlp's format sorting: the largest video up to max_height (or the closest, when
     // none is that small), then H.264 video and AAC audio in mp4, which play on every phone.
@@ -1385,7 +1388,8 @@ mod tests {
             args(Format::Video { max_height: None }, false),
             "-f b -S res,vcodec:h264,acodec:aac,ext:mp4:m4a"
         );
-        assert_eq!(args(Format::Audio, true), "-f ba[ext=m4a]/ba");
+        assert_eq!(args(Format::Audio, true), "-f ba[ext=m4a]/ba/b");
+        assert_eq!(args(Format::Audio, false), "-f ba[ext=m4a]/ba/b");
     }
 
     #[test]

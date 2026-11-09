@@ -116,6 +116,88 @@ fn plays(item: i64) -> i64 {
         .map_or(0, |progress| progress.plays)
 }
 
+/// The apps' UI tests save this page (scripts/selftest_server.py) as songs and play it from
+/// the Music tab: the same here. This test server says video/mp4 for every file, so yt-dlp
+/// sees no audio-only format and takes the best single file (the UI tests' server says
+/// audio/mp4: there it is the audio-only one).
+#[test]
+fn a_page_of_songs_saves_into_music_and_plays() {
+    playlist();
+    let id = api::save_playlist(
+        url("/music-playlist.html"),
+        PlaylistOptions {
+            format: MediaFormat::Audio,
+            lyrics: false,
+            limit: None,
+        },
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let job = loop {
+        let job = api::job(id).unwrap().unwrap();
+        if matches!(
+            job.status,
+            JobStatus::Done | JobStatus::Failed | JobStatus::Cancelled
+        ) {
+            break job;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the save did not finish: {job:?}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(
+        (job.status, job.done, job.failed),
+        (JobStatus::Done, 2, 0),
+        "{job:?}"
+    );
+    let music = api::categories()
+        .unwrap()
+        .into_iter()
+        .find(|tab| tab.name == "Music")
+        .unwrap();
+    let list = api::collections(music.id)
+        .unwrap()
+        .into_iter()
+        .find(|list| list.name == "Music Playlist")
+        .expect("the playlist is in the Music tab");
+    assert_eq!(list.entries, 2);
+    let songs = |list: &CollectionSummary| -> Vec<_> {
+        entries(list)
+            .iter()
+            .map(|row| {
+                let item = &row.item;
+                let seconds = item.duration_ms.map(|ms| (ms + 500) / 1000);
+                (item.title.clone(), item.media, seconds)
+            })
+            .collect()
+    };
+    let saved = songs(&list);
+    assert_eq!(
+        saved
+            .iter()
+            .map(|(title, media, _)| (title.as_str(), *media))
+            .collect::<Vec<_>>(),
+        [
+            ("long", api::MediaKind::Audio),
+            ("song", api::MediaKind::Audio)
+        ],
+        "{saved:?}"
+    );
+    let (queue, _) = queue();
+    queue.play_collection(list.id, None, true).unwrap();
+    let end = wait(&queue, "the end", |state| state.finished);
+    assert_eq!(end.current, Some(1));
+    assert!(end.skipped.is_empty(), "{:?}", end.skipped);
+    // Plain files carry no length; the library learns it from playing them.
+    let learned: Vec<_> = songs(&list)
+        .into_iter()
+        .map(|(_, _, seconds)| seconds)
+        .collect();
+    assert_eq!(learned, [Some(6), Some(2)]);
+}
+
 #[test]
 fn a_saved_playlist_plays_to_its_end() {
     let list = playlist();

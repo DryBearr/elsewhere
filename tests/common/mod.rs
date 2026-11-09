@@ -100,6 +100,15 @@ fn page(path: &str) -> Option<(&'static str, String)> {
             "<html><head><title>Nothing</title></head><body>No media here.</body></html>"
                 .to_owned(),
         )),
+        // The same page scripts/selftest_server.py gives the apps' UI tests: <audio> tags.
+        "/music-playlist.html" => Some((
+            "text/html; charset=utf-8",
+            "<html><head><title>Music Playlist</title></head><body>\n\
+             <audio src=\"/media/long.m4a\"></audio>\n\
+             <audio src=\"/media/song.m4a\"></audio>\n\
+             </body></html>"
+                .to_owned(),
+        )),
         "/real-playlist.html" => playlist(
             "Real Playlist",
             &[
