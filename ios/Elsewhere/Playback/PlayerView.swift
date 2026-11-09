@@ -16,6 +16,9 @@ struct PlayerView: View {
     /// Rows by item id (nil: no longer in the library), read as they come into view.
     @State private var rows: [Int64: ItemSummary?] = [:]
     @State private var loading: Set<Int> = []
+    /// Edit mode: rows can be dragged to a new place (only then, so a long press opens
+    /// the row's menu and does not start a drag).
+    @State private var editing = false
 
     var body: some View {
         NavigationStack {
@@ -30,23 +33,28 @@ struct PlayerView: View {
                         ForEach(Array(listed.enumerated()), id: \.element.key) { index, entry in
                             row(index: index, entry: entry, playing: entry.key == queue.currentKey, listed: listed)
                         }
-                        .onMove { from, to in
-                            guard let first = from.first else { return }
+                        .onMove(perform: editing ? { (from: IndexSet, to: Int) in
+                            guard let first = from.first, first < listed.count else { return }
                             // SwiftUI counts `to` before the entry leaves its place.
                             playback.moveEntry(key: listed[first].key, to: to > first ? to - 1 : to)
-                        }
+                        } : nil)
                         .onDelete { offsets in
                             for offset in offsets { playback.remove(key: listed[offset].key) }
                         }
                     }
                 }
                 .listStyle(.plain)
+                .environment(\.editMode, .constant(editing ? .active : .inactive))
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Close") { dismiss() }.accessibilityIdentifier("close-player")
                     }
-                    ToolbarItem(placement: .primaryAction) { EditButton() }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button(editing ? "Done" : "Edit") { editing.toggle() }
+                            .fontWeight(editing ? .semibold : .regular)
+                            .accessibilityIdentifier("edit-queue")
+                    }
                 }
             } else {
                 // The queue emptied (stopped, last entry removed): nothing to show.

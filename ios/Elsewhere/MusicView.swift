@@ -283,6 +283,9 @@ struct PlaylistView: View {
     @State private var failed: String?
     /// Bumped to start over (Retry).
     @State private var round = 0
+    /// Edit mode: rows can be dragged to a new place (only then, so a long press opens
+    /// the row's menu and does not start a drag).
+    @State private var editing = false
 
     private var own: Bool {
         if case .done(let playlist) = summary { return playlist.source == nil }
@@ -334,7 +337,7 @@ struct PlaylistView: View {
                     }
                     .onAppear { if index == rows.count - 1 { Task { await more() } } }
                 }
-                .onMove(perform: own ? dragged : nil)
+                .onMove(perform: own && editing ? dragged : nil)
                 .onDelete(perform: own ? swiped : nil)
                 if let failed {
                     // The first page failed: start over; a later one: ask for it again.
@@ -345,9 +348,14 @@ struct PlaylistView: View {
         .navigationTitle(title)
         .toolbar {
             if own && !rows.isEmpty {
-                ToolbarItem(placement: .primaryAction) { EditButton() }
+                ToolbarItem(placement: .primaryAction) {
+                    Button(editing ? "Done" : "Edit") { editing.toggle() }
+                        .fontWeight(editing ? .semibold : .regular)
+                        .accessibilityIdentifier("edit-order")
+                }
             }
         }
+        .environment(\.editMode, .constant(editing && own ? .active : .inactive))
         .safeAreaInset(edge: .top, spacing: 0) { ProblemBanner() }
         .task(id: "\(jobs.ended)-\(edits.count)-\(round)") { await reload() }
     }
