@@ -372,7 +372,7 @@ class MusicTest {
         ui.onNode(hasText("Music") and hasClickAction()).performClick()
         ui.waitUntil(20_000) {
             ui.onAllNodes(hasText("Music Playlist")).fetchSemanticsNodes().isNotEmpty() ||
-                ui.onAllNodes(hasText("No playlists yet. Save one from the Add tab.")).fetchSemanticsNodes().isNotEmpty()
+                ui.onAllNodes(hasText("No playlists yet. Save one from the Add tab, or make your own.")).fetchSemanticsNodes().isNotEmpty()
         }
     }
 

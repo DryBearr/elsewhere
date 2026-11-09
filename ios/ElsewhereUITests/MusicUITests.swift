@@ -209,11 +209,143 @@ final class MusicUITests: XCTestCase {
         app.buttons["bar-stop"].tap()
     }
 
+    func testOwnPlaylistsBrowsingAndSearch() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-selftest", "music", "-server", server]
+        app.launch()
+        app.tabBars.buttons["Music"].tap()
+        let saved = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Music Playlist'")).firstMatch
+        wait(saved, "exists == true", timeout: 180, in: app)
+        // Names no earlier run on this phone used.
+        let suffix = UInt32.random(in: 1000...9999)
+        let mine = "Mine \(suffix)", ours = "Ours \(suffix)", copy = "Ours \(suffix) (copy)"
+        /// The playlist row named `name` (not one whose name only starts with it).
+        func row(_ name: String) -> XCUIElement {
+            let longer = [mine, ours, copy].filter { $0 != name && $0.hasPrefix(name) }
+            let format = (["label BEGINSWITH %@"] + longer.map { _ in "NOT (label BEGINSWITH %@)" }).joined(separator: " AND ")
+            return app.buttons.matching(NSPredicate(format: format, argumentArray: [name] + longer)).firstMatch
+        }
+
+        // A new playlist.
+        app.buttons["new-playlist"].tap()
+        let field = app.alerts.textFields.firstMatch
+        wait(field, "exists == true", in: app)
+        field.tap()
+        field.typeText(mine)
+        app.alerts.buttons["OK"].tap()
+        wait(row(mine), "exists == true", in: app)
+
+        // Songs, A to Z; both into it, song first.
+        app.segmentedControls.buttons["Songs"].tap()
+        wait(app.buttons["item-1"], "exists == true", timeout: 30, in: app)
+        let titles = (0..<6).map { app.buttons["item-\($0)"] }.filter(\.exists).map(\.label)
+        XCTAssertEqual(titles, titles.sorted(), "\(titles)")
+        for title in ["song", "long"] {
+            guard let at = titles.firstIndex(where: { $0.hasPrefix(title) }) else {
+                return XCTFail("no \(title) in \(titles)")
+            }
+            app.buttons["item-\(at)"].press(forDuration: 1.2)
+            app.buttons["Add to playlist…"].tap()
+            let pick = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'pick-' AND label BEGINSWITH %@", mine)).firstMatch
+            wait(pick, "exists == true", in: app)
+            pick.tap()
+            wait(pick, "exists == false", in: app)
+        }
+        app.segmentedControls.buttons["Newest"].tap()
+        wait(app.buttons["item-1"], "exists == true", in: app)
+
+        // In it: move up, take out.
+        app.segmentedControls.buttons["Playlists"].tap()
+        wait(row(mine), "label CONTAINS '2 songs'", in: app)
+        row(mine).tap()
+        let count = app.staticTexts["entry-count"]
+        wait(count, "label == '2 songs'", in: app)
+        wait(app.buttons["song-1"], "label BEGINSWITH 'long'", in: app)
+        XCTAssertTrue(app.buttons["song-0"].label.hasPrefix("song"), app.buttons["song-0"].label)
+        app.buttons["song-1"].press(forDuration: 1.2)
+        app.buttons["Move up"].tap()
+        wait(app.buttons["song-0"], "label BEGINSWITH 'long'", in: app)
+        app.buttons["song-0"].press(forDuration: 1.2)
+        app.buttons["Remove from playlist"].tap()
+        wait(count, "label == '1 song'", in: app)
+        wait(app.buttons["song-0"], "label BEGINSWITH 'song'", in: app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        // Rename, copy, delete the copy.
+        wait(row(mine), "exists == true", in: app)
+        row(mine).press(forDuration: 1.2)
+        app.buttons["Rename"].tap()
+        wait(field, "exists == true", in: app)
+        field.tap()
+        field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: mine.count + 4) + ours)
+        app.alerts.buttons["OK"].tap()
+        wait(row(ours), "exists == true", in: app)
+        row(ours).press(forDuration: 1.2)
+        app.buttons["Copy"].tap()
+        wait(field, "exists == true", in: app)
+        app.alerts.buttons["OK"].tap()
+        wait(row(copy), "exists == true", in: app)
+        row(copy).press(forDuration: 1.2)
+        app.buttons["Delete"].tap()
+        wait(app.alerts.buttons["Delete"], "exists == true", in: app)
+        app.alerts.buttons["Delete"].tap()
+        wait(row(copy), "exists == false", in: app)
+
+        // A saved playlist is not changed by hand.
+        saved.tap()
+        wait(app.staticTexts["saved-note"], "exists == true", in: app)
+        app.buttons["song-0"].press(forDuration: 1.2)
+        wait(app.buttons["Play next"], "exists == true", in: app)
+        XCTAssertFalse(app.buttons["Remove from playlist"].exists)
+        XCTAssertFalse(app.buttons["Move down"].exists)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.04)).tap()
+        wait(app.buttons["Play next"], "exists == false", in: app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        // Search: songs (any case) and playlists; a song found plays.
+        let search = app.searchFields.firstMatch
+        wait(search, "exists == true", in: app)
+        search.tap()
+        search.typeText("SONG")
+        wait(app.buttons["found-0"], "label BEGINSWITH 'song'", in: app)
+        app.buttons["found-0"].tap()
+        wait(app.staticTexts["now-title"], "label == 'song'", in: app)
+        app.buttons["bar-stop"].tap()
+        wait(app.buttons["bar-stop"], "exists == false", in: app)
+        search.buttons.firstMatch.tap()
+        search.tap()
+        search.typeText(ours.lowercased())
+        wait(app.buttons["found-playlist-0"], "label BEGINSWITH %@", ours, in: app)
+        app.buttons["found-playlist-0"].tap()
+        wait(count, "label == '1 song'", in: app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        search.buttons.firstMatch.tap()
+        search.tap()
+        search.typeText("nothing like this")
+        wait(app.staticTexts["Nothing found."], "exists == true", in: app)
+        app.buttons["Cancel"].tap()
+
+        // The test songs name no artist or album.
+        app.segmentedControls.buttons["Artists"].tap()
+        wait(app.staticTexts["No artists yet."], "exists == true", in: app)
+        app.segmentedControls.buttons["Albums"].tap()
+        wait(app.staticTexts["No albums yet."], "exists == true", in: app)
+
+        // Clean up for the tests after this one.
+        app.segmentedControls.buttons["Playlists"].tap()
+        wait(row(ours), "exists == true", in: app)
+        row(ours).press(forDuration: 1.2)
+        app.buttons["Delete"].tap()
+        app.alerts.buttons["Delete"].tap()
+        wait(row(ours), "exists == false", in: app)
+    }
+
     /// Waits for `predicate` to hold for `element`; if it never does, prints what `app`
     /// shows (its accessibility tree) to say why.
-    private func wait(_ element: XCUIElement, _ predicate: String, timeout: TimeInterval = 15,
+    private func wait(_ element: XCUIElement, _ predicate: String, _ arguments: CVarArg..., timeout: TimeInterval = 15,
                       in app: XCUIApplication? = nil, file: StaticString = #filePath, line: UInt = #line) {
-        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: predicate), object: element)
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: predicate, argumentArray: arguments.map { $0 as Any }), object: element)
         let result = XCTWaiter().wait(for: [expectation], timeout: timeout)
         if result != .completed {
             print((app ?? XCUIApplication()).debugDescription)
