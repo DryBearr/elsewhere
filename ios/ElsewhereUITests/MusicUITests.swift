@@ -87,6 +87,9 @@ final class MusicUITests: XCTestCase {
         wait(app.buttons["song-1"], "exists == true", timeout: 30)
         app.buttons["play-all"].tap()
         wait(app.staticTexts["now-title"], "label == 'long'")
+        // Paused, so long stays on while the screens are checked (the simulator is slow).
+        app.buttons["bar-pause"].tap()
+        wait(app.buttons["bar-play"], "exists == true")
 
         // Open it from the bar, close it, open it again.
         let title = app.staticTexts["player-title"]
@@ -119,7 +122,6 @@ final class MusicUITests: XCTestCase {
         wait(app.buttons["speed"], "label CONTAINS '1x'")
 
         // Paused, the slider goes to the middle (3 s of 6) and the player follows.
-        app.buttons["player-pause"].tap()
         wait(app.buttons["player-play"], "exists == true")
         let slider = app.sliders["player-position"]
         wait(slider, "exists == true")
