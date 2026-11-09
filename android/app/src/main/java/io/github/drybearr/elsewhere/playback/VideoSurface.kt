@@ -35,6 +35,17 @@ object VideoSurface {
 class VideoView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
     init {
         holder.addCallback(this)
+        Playback.videoEvents.addLast("video view made")
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        Playback.videoEvents.addLast("video view on screen")
+    }
+
+    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight)
+        Playback.videoEvents.addLast("video view ${width}x$height")
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {

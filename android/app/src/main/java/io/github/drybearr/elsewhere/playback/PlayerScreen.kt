@@ -180,6 +180,7 @@ private fun Player(queue: QueueState, onClose: () -> Unit) {
             Box(Modifier.size(48.dp))
         }
         if (playback.hasVideo) {
+            LaunchedEffect(Unit) { Playback.videoEvents.addLast("player shows a video") }
             Video(queue, Modifier.padding(vertical = 12.dp))
         } else Box(
             Modifier

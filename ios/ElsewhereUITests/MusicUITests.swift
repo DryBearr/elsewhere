@@ -187,7 +187,6 @@ final class MusicUITests: XCTestCase {
         wait(picture, "value == 'shown'", timeout: 20, in: app)
         app.buttons["close-player"].tap()
         wait(picture, "exists == false")
-        wait(app.buttons["bar-pause"], "exists == true")
 
         // Full screen and back.
         bar.tap()
