@@ -195,8 +195,9 @@ impl Video {
         let mpv = &inner.mpv;
         let text = |name: &str| mpv.get_string(name).unwrap_or_else(|| "-".to_owned());
         format!(
-            "{}: {attached:?} vo={} current-vo={} vid={} wid={} vo-configured={} video={}x{}",
+            "{} at {:p}: {attached:?} vo={} current-vo={} vid={} wid={} vo-configured={} video={}x{}",
             inner.name,
+            Arc::as_ptr(&inner),
             text("vo"),
             text("current-vo"),
             text("vid"),
@@ -225,6 +226,7 @@ impl Video {
     /// or calls back about frames. Fine to call when nothing is attached.
     pub fn detach(&self) -> Result<(), Problem> {
         let inner = self.inner()?;
+        crate::logs::info("player", format!("{}: video off", inner.name)).write();
         let mut slot = lock(&inner.video);
         *lock(&slot.on_frame) = None;
         let was = std::mem::take(&mut slot.attached);

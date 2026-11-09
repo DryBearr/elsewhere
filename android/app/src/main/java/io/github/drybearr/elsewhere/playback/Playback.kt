@@ -316,9 +316,9 @@ object Playback {
         }
         shownSurface = null
         return try {
-            made.attachSurface(window)
+            val said = made.attachSurface(window)
             shownSurface = surface to window
-            "attached".also(::videoEvent)
+            "attached: $said".also(::videoEvent)
         } catch (e: Exception) {
             VideoSurface.release(window)
             "refused: ${describe(e)}".also(::videoEvent)
