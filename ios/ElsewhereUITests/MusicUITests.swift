@@ -188,11 +188,12 @@ final class MusicUITests: XCTestCase {
         bar.tap()
         wait(picture, "value == 'shown'", timeout: 20, in: app)
         app.buttons["full-screen"].tap()
-        wait(app.buttons["full-screen"], "exists == false")
+        let full = app.otherElements["full-video"]
+        wait(full, "exists == true", in: app)
         wait(picture, "value == 'shown'", timeout: 20, in: app)
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        full.tap()
         app.buttons["leave-full-screen"].tap()
-        wait(app.buttons["full-screen"], "exists == true")
+        wait(full, "exists == false", in: app)
         wait(picture, "value == 'shown'", timeout: 20, in: app)
 
         // To the home screen and back: the picture comes back.

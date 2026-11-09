@@ -238,6 +238,8 @@ private struct FullScreenVideo: View {
         }
         .contentShape(Rectangle())
         .onTapGesture { controls.toggle() }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("full-video")
         // The queue emptied: nothing to show.
         .onChange(of: playback.state?.entryCount ?? 0) { count in if count == 0 { dismiss() } }
     }

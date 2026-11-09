@@ -308,6 +308,12 @@ class MusicTest {
                     }
             }
 
+    /** The end of the core's own log (mpv's errors go there): the app is gone after the run. */
+    private fun coreLog(): String = runCatching {
+        File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "logs/elsewhere.log")
+            .readLines().takeLast(40).joinToString("\n")
+    }.getOrElse { "(none: $it)" }
+
     /** Waits for the queue's rows to hold; if they never do, says what they show. */
     private fun waitRows(what: String, check: () -> Boolean) {
         try {
@@ -324,7 +330,7 @@ class MusicTest {
         while (true) {
             val state = Playback.state.value
             if (state != null && check(state)) return
-            assertTrue("never $what: $state", System.currentTimeMillis() < deadline)
+            assertTrue("never $what: $state\ncore log:\n${coreLog()}", System.currentTimeMillis() < deadline)
             Thread.sleep(20)
         }
     }
