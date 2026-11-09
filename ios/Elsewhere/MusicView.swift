@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// The Music tab: saved playlists; open one to see its songs and play them.
+/// A tab of playlists (Music, Videos): its saved playlists; open one to see what is in it
+/// and play it. `tab` is the library tab's name.
 struct MusicView: View {
+    var tab = "Music"
     @ObservedObject private var jobs = JobsStore.shared
     @State private var loaded: Loaded<[CollectionSummary]> = .loading
 
@@ -20,25 +22,28 @@ struct MusicView: View {
             case .done(let playlists):
                 ForEach(playlists, id: \.id) { playlist in
                     NavigationLink {
-                        PlaylistView(id: playlist.id, name: playlist.name)
+                        PlaylistView(id: playlist.id, name: playlist.name, noun: noun)
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(playlist.name).lineLimit(2)
-                            Text(songs(playlist.entries)).font(.caption).foregroundStyle(.secondary)
+                            Text(count(playlist.entries, noun)).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
             }
         }
-        .navigationTitle("Music")
+        .navigationTitle(tab)
         .task(id: ended) { await load() }
         .refreshable { await load() }
     }
 
+    private var noun: String { tab == "Music" ? "song" : "video" }
+
     private func load() async {
+        let tab = tab
         loaded = await Task.detached { () -> Loaded<[CollectionSummary]> in
             do {
-                return .done(try musicPlaylists())
+                return .done(try playlists(of: tab))
             } catch {
                 return .failed(describe(error))
             }
@@ -53,11 +58,12 @@ enum Loaded<T> {
     case done(T)
 }
 
-/// The Music tab's playlists (smart ones have no songs yet, so they are not shown).
-private func musicPlaylists() throws -> [CollectionSummary] {
+/// A tab's playlists (smart ones have nothing in them yet, so they are not shown).
+private func playlists(of tab: String) throws -> [CollectionSummary] {
     if let error = Core.startError { throw ShownError(text: "The core did not start: \(error)") }
-    guard let music = try categories().first(where: { $0.name == "Music" && $0.media == .audio }) else { return [] }
-    return try collections(categoryId: music.id).filter { !$0.smart }
+    guard let found = try categories().first(where: { $0.name == tab && ($0.media == .audio || $0.media == .video) })
+    else { return [] }
+    return try collections(categoryId: found.id).filter { !$0.smart }
 }
 
 struct ShownError: Error, CustomStringConvertible {
@@ -69,6 +75,7 @@ struct ShownError: Error, CustomStringConvertible {
 struct PlaylistView: View {
     let id: Int64
     let name: String
+    var noun = "song"
 
     /// Entries asked for per page.
     private static let page: UInt32 = 100
@@ -95,7 +102,7 @@ struct PlaylistView: View {
                 ProblemRow(text: text) { round += 1 }
             case .done(let playlist):
                 HStack {
-                    Text(songs(playlist.entries)).foregroundStyle(.secondary)
+                    Text(count(playlist.entries, noun)).foregroundStyle(.secondary)
                     Spacer()
                     Button {
                         playback.playCollection(id: id, startEntry: nil)
@@ -212,8 +219,8 @@ struct ProblemRow: View {
     }
 }
 
-private func songs(_ count: Int64) -> String {
-    count == 1 ? "1 song" : "\(count) songs"
+private func count(_ count: Int64, _ noun: String) -> String {
+    count == 1 ? "1 \(noun)" : "\(count) \(noun)s"
 }
 
 /// 3:07, or 1:02:03 from an hour.

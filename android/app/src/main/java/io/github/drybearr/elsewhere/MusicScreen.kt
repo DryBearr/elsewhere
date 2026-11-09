@@ -57,18 +57,22 @@ import uniffi.elsewhere.collections
 /** Entries asked for per page of a playlist. */
 private const val PAGE = 100u
 
-/** The Music tab: saved playlists; open one to see its songs and play them. */
+/**
+ * A tab of playlists (Music, Videos): its saved playlists; open one to see what is in it
+ * and play it. `tab` is the library tab's name.
+ */
 @Composable
-fun MusicScreen() {
-    var open by rememberSaveable { mutableStateOf<Long?>(null) }
+fun MusicScreen(tab: String = "Music") {
+    var open by rememberSaveable(tab) { mutableStateOf<Long?>(null) }
+    val noun = if (tab == "Music") "song" else "video"
     // Saving a playlist changes what is here: look again when a job ends.
     val jobs by JobsStore.jobs.collectAsState()
     val ended = jobs.values.count { it.status.isFinished }
     val id = open
     if (id == null) {
-        Playlists(ended) { open = it }
+        Playlists(tab, noun, ended) { open = it }
     } else {
-        Playlist(id, ended) { open = null }
+        Playlist(id, noun, ended) { open = null }
     }
 }
 
@@ -79,27 +83,29 @@ private sealed interface Loaded<out T> {
     data class Done<T>(val value: T) : Loaded<T>
 }
 
-/** The Music tab's playlists (smart ones have no songs yet, so they are not shown). */
-private fun musicPlaylists(): List<CollectionSummary> {
+/** A tab's playlists (smart ones have nothing in them yet, so they are not shown). */
+private fun playlistsOf(tab: String): List<CollectionSummary> {
     Core.startError?.let { throw IllegalStateException("The core did not start: $it") }
-    val music = categories().firstOrNull { it.name == "Music" && it.media == MediaKind.AUDIO } ?: return emptyList()
-    return collections(music.id).filter { !it.smart }
+    val found = categories().firstOrNull {
+        it.name == tab && (it.media == MediaKind.AUDIO || it.media == MediaKind.VIDEO)
+    } ?: return emptyList()
+    return collections(found.id).filter { !it.smart }
 }
 
 @Composable
-private fun Playlists(ended: Int, onOpen: (Long) -> Unit) {
+private fun Playlists(tab: String, noun: String, ended: Int, onOpen: (Long) -> Unit) {
     var retry by remember { mutableIntStateOf(0) }
-    val loaded by produceState<Loaded<List<CollectionSummary>>>(Loaded.Loading, ended, retry) {
+    val loaded by produceState<Loaded<List<CollectionSummary>>>(Loaded.Loading, tab, ended, retry) {
         value = withContext(Dispatchers.IO) {
             try {
-                Loaded.Done(musicPlaylists())
+                Loaded.Done(playlistsOf(tab))
             } catch (e: Exception) {
                 Loaded.Failed(describe(e))
             }
         }
     }
     Column(Modifier.padding(horizontal = 16.dp)) {
-        Text("Music", style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(vertical = 12.dp))
+        Text(tab, style = MaterialTheme.typography.titleLarge, modifier = Modifier.padding(vertical = 12.dp))
         when (val now = loaded) {
             Loaded.Loading -> Unit
             is Loaded.Failed -> Problem(now.text) { retry++ }
@@ -113,7 +119,7 @@ private fun Playlists(ended: Int, onOpen: (Long) -> Unit) {
                         ) {
                             Text(playlist.name, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             Text(
-                                songs(playlist.entries),
+                                count(playlist.entries, noun),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -128,7 +134,7 @@ private fun Playlists(ended: Int, onOpen: (Long) -> Unit) {
 
 /** One playlist: its songs, page by page; tap one to play from there. */
 @Composable
-private fun Playlist(id: Long, ended: Int, onBack: () -> Unit) {
+private fun Playlist(id: Long, noun: String, ended: Int, onBack: () -> Unit) {
     BackHandler(onBack = onBack)
     val queue by Playback.state.collectAsState()
     val source by Playback.source.collectAsState()
@@ -199,7 +205,7 @@ private fun Playlist(id: Long, ended: Int, onBack: () -> Unit) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
-                        Text(songs(now.value.entries), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(count(now.value.entries, noun), color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Button(
                             onClick = { Playback.playCollection(id, null) },
                             enabled = now.value.entries > 0,
@@ -279,7 +285,7 @@ private fun Problem(text: String, retry: () -> Unit) {
     }
 }
 
-private fun songs(count: Long) = if (count == 1L) "1 song" else "$count songs"
+private fun count(count: Long, noun: String) = if (count == 1L) "1 $noun" else "$count ${noun}s"
 
 /** 3:07, or 1:02:03 from an hour. */
 private fun time(ms: Long): String {

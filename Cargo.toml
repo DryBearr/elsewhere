@@ -61,6 +61,10 @@ name = "queue"
 required-features = ["player"]
 
 [[test]]
+name = "video"
+required-features = ["player"]
+
+[[test]]
 name = "api_queue"
 required-features = ["playlists", "player"]
 

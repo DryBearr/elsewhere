@@ -95,6 +95,13 @@ pub struct NowPlaying {
     pub media: super::MediaKind,
 }
 
+/// Told when a new video frame is ready to draw (iOS), on one of the engine's threads:
+/// hand it to the drawing thread and return. Do not call the queue from here.
+#[uniffi::export(callback_interface)]
+pub trait FrameListener: Send + Sync {
+    fn on_frame(&self);
+}
+
 /// Gets the queue's state at once, then every change, on the queue's thread: hand it to
 /// the UI thread and return. Do not call the queue from here.
 #[uniffi::export(callback_interface)]
@@ -266,6 +273,45 @@ impl CoreQueue {
 
     pub fn state(&self) -> QueueState {
         self.queue.state().into()
+    }
+
+    /// Video on, drawn as frames (iOS): `listener` hears when a new frame is ready for
+    /// `draw_frame`. While nothing is attached a video plays only its sound.
+    pub fn attach_frames(&self, listener: Box<dyn FrameListener>) -> Result<(), ApiError> {
+        Ok(self
+            .queue
+            .video()
+            .attach_frames(move || listener.on_frame())?)
+    }
+
+    /// Draws the current frame (scaled to fit, black around it) into the memory at
+    /// `address`: `width` by `height` pixels of 4 bytes (blue, green, red, unused; a
+    /// CVPixelBuffer of kCVPixelFormatType_32BGRA), `stride` bytes a line. The memory must
+    /// stay locked and writable for the whole call. False when no frames are attached.
+    pub fn draw_frame(
+        &self,
+        width: u32,
+        height: u32,
+        stride: u32,
+        address: u64,
+    ) -> Result<bool, ApiError> {
+        // SAFETY: the caller's promise above; sizes are checked before anything is drawn.
+        Ok(unsafe {
+            self.queue
+                .video()
+                .draw(width, height, stride as usize, address as usize as *mut u8)
+        }?)
+    }
+
+    /// Video off (the screen went away, the app went to the background): the sound plays
+    /// on. Fine when nothing is attached.
+    pub fn detach_video(&self) -> Result<(), ApiError> {
+        Ok(self.queue.video().detach()?)
+    }
+
+    /// The engine's number for Android's VideoSurface (JNI) functions.
+    pub fn video_target(&self) -> i64 {
+        self.queue.video().target()
     }
 
     /// The entries, in their list order (what a queue screen shows; the current one is at

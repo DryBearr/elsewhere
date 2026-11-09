@@ -104,16 +104,24 @@ meson_build libass -Dfontconfig=disabled -Ddirectwrite=disabled -Dcoretext=disab
 meson_build libplacebo -Dvulkan=disabled -Dopengl=enabled -Dgl-proc-addr=enabled -Dglslang=disabled \
   -Dshaderc=disabled -Dlcms=disabled -Ddovi=disabled -Dlibdovi=disabled -Dd3d11=disabled \
   -Ddemos=false -Dtests=false -Dbench=false -Dfuzz=false -Dxxhash=disabled -Dunwind=disabled
-# Only mpv_* is exported: the libraries inside stay hidden.
+# Only mpv_* is exported, and FFmpeg's av_jni_set_java_vm: the core hands it the Java VM,
+# which mpv's video output needs to reach the app's Surface (src/player/android.rs). The
+# libraries inside stay hidden.
+printf '{\n  global: mpv_*; av_jni_set_java_vm;\n  local: *;\n};\n' > "$out/exports.map"
 meson_build mpv -Ddefault_library=shared "${MPV_COMMON[@]}" \
   -Dgl=enabled -Degl-android=enabled -Dandroid-media-ndk=enabled -Daaudio=enabled -Dopensles=enabled \
-  -Daudiotrack=enabled "-Dc_link_args=['-Wl,-z,max-page-size=16384', '-Wl,--exclude-libs,ALL']"
+  -Daudiotrack=enabled "-Dc_link_args=['-Wl,-z,max-page-size=16384', '-Wl,--version-script=$out/exports.map', '-Wl,--undefined-version']"
 grep -q "enabled features:.* gpl " "$out/mpv.log" && { echo "mpv was configured as GPL" >&2; exit 1; }
 
 "$toolchain/llvm-strip" --strip-unneeded -o "$out/libmpv.so" "$prefix/lib/libmpv.so"
-others=$("$toolchain/llvm-readelf" --dyn-syms -W "$out/libmpv.so" | awk '$5 == "GLOBAL" && $7 != "UND" {print $8}' | grep -v '^mpv_' || true)
+symbols=$("$toolchain/llvm-readelf" --dyn-syms -W "$out/libmpv.so" | awk '$5 == "GLOBAL" && $7 != "UND" {print $8}' | sed 's/@.*//')
+others=$(echo "$symbols" | grep -v '^mpv_' | grep -v '^av_jni_set_java_vm$' || true)
 if [ -n "$others" ]; then
-  echo "libmpv.so exports more than mpv_*: $(echo "$others" | tr '\n' ' ' | cut -c1-200)" >&2
+  echo "libmpv.so exports more than mpv_* and av_jni_set_java_vm: $(echo "$others" | tr '\n' ' ' | cut -c1-200)" >&2
+  exit 1
+fi
+if ! grep -qx 'av_jni_set_java_vm' <<< "$symbols"; then
+  echo "libmpv.so does not export av_jni_set_java_vm (needed for video)" >&2
   exit 1
 fi
 needed=$("$toolchain/llvm-readelf" -d "$out/libmpv.so" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort | tr '\n' ' ')

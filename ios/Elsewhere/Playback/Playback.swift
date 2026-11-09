@@ -44,6 +44,11 @@ final class Playback: ObservableObject {
     private let commands = DispatchQueue(label: "elsewhere-playback")
     /// Touched on `commands` only.
     private var queue: CoreQueue?
+    /// The same queue for drawing video frames, which does not go through `commands`.
+    private let drawLock = NSLock()
+    private var drawing: CoreQueue?
+    /// The video views showing, newest last (main thread): the newest gets the frames.
+    private var videoViews: [VideoFrames] = []
 
     private init() {}
 
@@ -244,6 +249,9 @@ final class Playback: ObservableObject {
         let made = try CoreQueue()
         made.setListener(listener: QueueFeed())
         queue = made
+        drawLock.lock()
+        drawing = made
+        drawLock.unlock()
         return made
     }
 
@@ -274,6 +282,38 @@ final class Playback: ObservableObject {
         guard resumeAfterInterruption else { return }
         resumeAfterInterruption = false
         changed()
+    }
+
+    // MARK: Video (VideoView)
+
+    /// A video view came on screen: it gets the frames (main thread).
+    func attachVideo(_ view: VideoFrames) {
+        videoViews.removeAll { $0 === view }
+        videoViews.append(view)
+        command("show video", {}) { try $0.attachFrames(listener: view) }
+    }
+
+    /// A video view went: the one before it gets the frames, or video goes off (the sound
+    /// plays on).
+    func detachVideo(_ view: VideoFrames) {
+        guard let at = videoViews.firstIndex(where: { $0 === view }) else { return }
+        let wasNewest = at == videoViews.count - 1
+        videoViews.remove(at: at)
+        guard wasNewest else { return }
+        if let newest = videoViews.last {
+            command("show video", {}) { try $0.attachFrames(listener: newest) }
+        } else {
+            command("hide video", {}) { try $0.detachVideo() }
+        }
+    }
+
+    /// Draws the current frame into memory at `address` (on the drawing thread).
+    func drawFrame(width: Int, height: Int, stride: Int, address: UInt64) -> Bool {
+        drawLock.lock()
+        let queue = drawing
+        drawLock.unlock()
+        guard let queue else { return false }
+        return (try? queue.drawFrame(width: UInt32(width), height: UInt32(height), stride: UInt32(stride), address: address)) ?? false
     }
 
     // MARK: The audio session

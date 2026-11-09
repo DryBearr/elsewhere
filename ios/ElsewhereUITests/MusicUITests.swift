@@ -160,6 +160,48 @@ final class MusicUITests: XCTestCase {
         app.buttons["bar-stop"].tap()
     }
 
+    func testAVideoShowsInThePlayerAndPlaysOnWithoutIt() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-selftest", "music", "-server", server]
+        app.launch()
+        app.tabBars.buttons["Videos"].tap()
+        let playlist = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Video Playlist'")).firstMatch
+        wait(playlist, "exists == true", timeout: 180, in: app)
+        XCTAssertTrue(playlist.label.contains("2 videos"), playlist.label)
+        playlist.tap()
+        wait(app.buttons["song-1"], "exists == true", timeout: 30)
+        app.buttons["play-all"].tap()
+        wait(app.staticTexts["now-title"], "label == 'long'")
+
+        // The player shows the picture; closing it, the picture goes and the sound plays on.
+        let bar = app.otherElements["open-player"]
+        let picture = app.descendants(matching: .any)["video-state"]
+        bar.tap()
+        wait(picture, "value == 'shown'", timeout: 20, in: app)
+        app.buttons["close-player"].tap()
+        wait(picture, "exists == false")
+        wait(app.buttons["bar-pause"], "exists == true")
+
+        // Full screen and back.
+        bar.tap()
+        wait(picture, "value == 'shown'", timeout: 20, in: app)
+        app.buttons["full-screen"].tap()
+        wait(app.buttons["full-screen"], "exists == false")
+        wait(picture, "value == 'shown'", timeout: 20, in: app)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        app.buttons["leave-full-screen"].tap()
+        wait(app.buttons["full-screen"], "exists == true")
+        wait(picture, "value == 'shown'", timeout: 20, in: app)
+
+        // To the home screen and back: the picture comes back.
+        XCUIDevice.shared.press(.home)
+        sleep(2)
+        app.activate()
+        wait(picture, "value == 'shown'", timeout: 20, in: app)
+        app.buttons["close-player"].tap()
+        app.buttons["bar-stop"].tap()
+    }
+
     /// Waits for `predicate` to hold for `element`; if it never does, prints what `app`
     /// shows (its accessibility tree) to say why.
     private func wait(_ element: XCUIElement, _ predicate: String, timeout: TimeInterval = 15,

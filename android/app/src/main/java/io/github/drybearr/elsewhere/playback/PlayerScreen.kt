@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
@@ -44,11 +45,13 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -59,6 +62,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -173,7 +179,9 @@ private fun Player(queue: QueueState, onClose: () -> Unit) {
             )
             Box(Modifier.size(48.dp))
         }
-        Box(
+        if (playback.hasVideo) {
+            Video(queue, Modifier.padding(vertical = 12.dp))
+        } else Box(
             Modifier
                 .padding(vertical = 12.dp)
                 .widthIn(max = 360.dp)
@@ -217,6 +225,58 @@ private fun Player(queue: QueueState, onClose: () -> Unit) {
         Position(queue)
         Controls(queue)
     }
+}
+
+/**
+ * The video, in its own shape (black around it while the size is not known yet). Full
+ * screen covers everything in black; tapping it shows play/pause and the way back.
+ */
+@Composable
+private fun Video(queue: QueueState, modifier: Modifier) {
+    var full by rememberSaveable { mutableStateOf(false) }
+    val playback = queue.playback
+    val shape = (playback.videoWidth?.toFloat() ?: 16f) / (playback.videoHeight?.toFloat() ?: 9f)
+    if (full) {
+        var controls by remember { mutableStateOf(false) }
+        Dialog(
+            onDismissRequest = { full = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+        ) {
+            Box(
+                Modifier.fillMaxSize().background(Color.Black).clickable { controls = !controls }.testTag("video-full"),
+                contentAlignment = Alignment.Center,
+            ) {
+                VideoSurfaceView(queue.wantsPlay, Modifier.fillMaxWidth().aspectRatio(shape.coerceIn(0.2f, 5f)))
+                if (controls) {
+                    Row(Modifier.align(Alignment.BottomCenter).padding(24.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                        FilledIconButton(onClick = { if (queue.wantsPlay) Playback.pause() else Playback.resume() }) {
+                            if (queue.wantsPlay) Icon(PlayerIcons.Pause, contentDescription = "Pause") else Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
+                        }
+                        FilledIconButton(onClick = { full = false }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Leave full screen")
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        Box(modifier.fillMaxWidth().background(Color.Black), contentAlignment = Alignment.Center) {
+            VideoSurfaceView(queue.wantsPlay, Modifier.fillMaxWidth().aspectRatio(shape.coerceIn(0.2f, 5f)))
+            IconButton(onClick = { full = true }, modifier = Modifier.align(Alignment.BottomEnd)) {
+                Icon(PlayerIcons.FullScreen, contentDescription = "Full screen", tint = Color.White)
+            }
+        }
+    }
+}
+
+/** The SurfaceView mpv draws into; the screen stays on while the video plays. */
+@Composable
+private fun VideoSurfaceView(playing: Boolean, modifier: Modifier) {
+    AndroidView(
+        factory = { context -> VideoView(context) },
+        update = { view -> view.keepScreenOn = playing },
+        modifier = modifier.testTag("video"),
+    )
 }
 
 /** The position slider and the times; while dragging, the slider follows the finger only. */

@@ -541,3 +541,37 @@ fn the_lock_screen_reads_now_playing_and_wants_play() {
     queue.stop().unwrap();
     assert_eq!(queue.state().now_playing, None);
 }
+
+#[test]
+fn each_queue_has_its_own_video_target_and_frames_need_their_output() {
+    let (first, _) = queue();
+    let (second, _) = queue();
+    let (a, b) = (first.video_target(), second.video_target());
+    assert!(a > 0 && b > 0 && a != b, "{a} {b}");
+    // These tests run without the frames output (that is iOS's, and tests/video.rs's):
+    // attaching frames is refused, drawing draws nothing, detaching is fine.
+    struct Count;
+    impl api::FrameListener for Count {
+        fn on_frame(&self) {}
+    }
+    assert_eq!(
+        kind_of(&first.attach_frames(Box::new(Count))),
+        Some(ProblemKind::Bug)
+    );
+    let mut pixels = vec![0u8; 16 * 16 * 4];
+    assert!(
+        !first
+            .draw_frame(16, 16, 64, pixels.as_mut_ptr() as u64)
+            .unwrap()
+    );
+    assert_eq!(
+        kind_of(&first.draw_frame(0, 16, 64, pixels.as_mut_ptr() as u64)),
+        Some(ProblemKind::Input)
+    );
+    assert_eq!(
+        kind_of(&first.draw_frame(16, 16, 64, 0)),
+        Some(ProblemKind::Input)
+    );
+    first.detach_video().unwrap();
+    drop(second);
+}

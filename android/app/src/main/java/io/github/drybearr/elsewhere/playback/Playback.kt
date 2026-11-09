@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.view.Surface
 import io.github.drybearr.elsewhere.SelfTest
 import io.github.drybearr.elsewhere.describe
 import java.util.concurrent.CopyOnWriteArrayList
@@ -49,6 +50,15 @@ object Playback {
     private val main = Handler(Looper.getMainLooper())
 
     private var queue: CoreQueue? = null
+
+    /** The engine's number for VideoSurface, once the queue is made (0 before). */
+    @Volatile
+    private var target = 0L
+
+    /** A Surface waiting for the queue to be made (main thread). */
+    private var waitingSurface: Surface? = null
+    /** The Surface mpv draws into now (the newest VideoView's). */
+    private var shownSurface: Surface? = null
 
     /** One thread, so commands reach the queue in the order they were made. */
     private val commands = Executors.newSingleThreadExecutor { Thread(it, "elsewhere-playback") }
@@ -266,6 +276,42 @@ object Playback {
             }
         })
         queue = made
+        target = made.videoTarget()
+        // A video screen that came first gets its picture now.
+        main.post { waitingSurface?.let { attachSurface(it) } }
+    }
+
+    // --- Video (VideoView) ----------------------------------------------------------------
+
+    /**
+     * A Surface to show video on (main thread; VideoView). The newest one wins: going full
+     * screen makes a second view, whose Surface can come before the first one goes.
+     */
+    fun attachSurface(surface: Surface) {
+        val number = target
+        if (number == 0L) {
+            waitingSurface = surface
+            return
+        }
+        waitingSurface = null
+        shownSurface = if (VideoSurface.attach(number, surface)) surface else null
+        if (shownSurface == null) Log.w(TAG, "the video surface was not taken")
+    }
+
+    fun resizeSurface(surface: Surface, width: Int, height: Int) {
+        if (shownSurface === surface) VideoSurface.resize(target, width, height)
+    }
+
+    /**
+     * A Surface goes: if it is the one shown, video off (the sound plays on). mpv is done
+     * with it when this returns, as Android requires.
+     */
+    fun detachSurface(surface: Surface) {
+        if (waitingSurface === surface) waitingSurface = null
+        if (shownSurface === surface) {
+            shownSurface = null
+            VideoSurface.detach(target)
+        }
     }
 
     private fun publish(state: QueueState) {

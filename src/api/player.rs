@@ -33,6 +33,12 @@ pub struct PlayerState {
     pub volume: f64,
     pub has_video: bool,
     pub has_audio: bool,
+    /// The picture's width and height as shown (rotation applied), for a video: the
+    /// shape of the video's frame on screen.
+    pub video_width: Option<u32>,
+    pub video_height: Option<u32>,
+    /// A picture shows: video is attached and a video plays.
+    pub video_shown: bool,
     pub problem: Option<Problem>,
 }
 
@@ -119,6 +125,9 @@ impl From<player::PlayerState> for PlayerState {
             volume: state.volume,
             has_video: state.has_video,
             has_audio: state.has_audio,
+            video_width: state.video_size.map(|size| size.0),
+            video_height: state.video_size.map(|size| size.1),
+            video_shown: state.video_shown,
             problem: state.problem.map(Problem::from),
         }
     }

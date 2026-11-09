@@ -16,6 +16,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
+import androidx.lifecycle.Lifecycle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.drybearr.elsewhere.playback.Playback
@@ -207,6 +208,47 @@ class MusicTest {
     }
 
     @Test
+    fun aVideoShowsInThePlayerAndPlaysOnWithoutIt() {
+        val list = save("video-playlist.html", "Videos", "Video Playlist", MediaFormat.Video(null))
+        assertEquals(listOf("long", "clip"), collectionItems(list.id, null, 0u).entries.map { it.item.title })
+        ui.onNode(hasText("Videos") and hasClickAction()).performClick()
+        ui.waitUntil(20_000) { ui.onAllNodes(hasText("Video Playlist") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
+        ui.onNode(hasText("Video Playlist") and hasClickAction()).performClick()
+        ui.waitUntil(20_000) { ui.onAllNodes(hasText("2 videos")).fetchSemanticsNodes().isNotEmpty() }
+        ui.onNode(hasText("Play") and hasClickAction()).performClick()
+        // Without a screen for it, a video plays its sound only.
+        waitFor("long playing") { it.nowPlaying?.title == "long" && it.playback.status == PlayerStatus.PLAYING }
+        waitFor("its shape") { it.playback.hasVideo && it.playback.videoWidth == 96u && it.playback.videoHeight == 64u }
+        assertTrue("no picture without a screen", Playback.state.value?.playback?.videoShown == false)
+
+        // The player shows the picture; closing it turns the picture off, the sound plays on.
+        ui.onNodeWithTag("open-player").performClick()
+        waitFor("the picture shown", 20_000) { it.playback.videoShown }
+        ui.onNodeWithContentDescription("Close player").performClick()
+        waitFor("the picture off") { !it.playback.videoShown }
+        val at = Playback.state.value!!.playback.positionMs
+        waitFor("the sound playing on") { it.wantsPlay && it.playback.positionMs > at + 500 }
+
+        // Full screen and back.
+        ui.onNodeWithTag("open-player").performClick()
+        waitFor("the picture again", 20_000) { it.playback.videoShown }
+        ui.onNodeWithContentDescription("Full screen").performClick()
+        ui.waitUntil(10_000) { ui.onAllNodes(hasTestTag("video-full")).fetchSemanticsNodes().isNotEmpty() }
+        waitFor("the picture full screen", 20_000) { it.playback.videoShown }
+        ui.onNodeWithTag("video-full").performClick()
+        ui.onNodeWithContentDescription("Leave full screen").performClick()
+        ui.waitUntil(10_000) { ui.onAllNodes(hasTestTag("video-full")).fetchSemanticsNodes().isEmpty() }
+        waitFor("the picture back in the player", 20_000) { it.playback.videoShown }
+
+        // The app in the background: no picture, the sound plays on; back: the picture again.
+        ui.activityRule.scenario.moveToState(Lifecycle.State.CREATED)
+        waitFor("no picture in the background") { !it.playback.videoShown }
+        waitFor("still playing") { it.wantsPlay }
+        ui.activityRule.scenario.moveToState(Lifecycle.State.RESUMED)
+        waitFor("the picture after coming back", 20_000) { it.playback.videoShown }
+    }
+
+    @Test
     fun theMusicTabSaysWhenThereIsNothing() {
         // Whatever is saved, the tab opens; an empty Music tab says how to fill it.
         ui.onNode(hasText("Music") and hasClickAction()).performClick()
@@ -216,9 +258,14 @@ class MusicTest {
         }
     }
 
-    /** Saves the test playlist as songs, the way the Add tab does; again is fine. */
-    private fun save(): CollectionSummary {
-        val id = savePlaylist("$server/music-playlist.html", PlaylistOptions(MediaFormat.Audio, false, null))
+    /** Saves a test playlist (songs by default), the way the Add tab does; again is fine. */
+    private fun save(
+        page: String = "music-playlist.html",
+        tab: String = "Music",
+        name: String = "Music Playlist",
+        format: MediaFormat = MediaFormat.Audio,
+    ): CollectionSummary {
+        val id = savePlaylist("$server/$page", PlaylistOptions(format, false, null))
         val deadline = System.currentTimeMillis() + 180_000
         while (true) {
             val state = job(id)
@@ -229,8 +276,8 @@ class MusicTest {
             assertTrue("the save did not finish: $state", System.currentTimeMillis() < deadline)
             Thread.sleep(100)
         }
-        val music = categories().first { it.name == "Music" }
-        return collections(music.id).first { it.name == "Music Playlist" }
+        val found = categories().first { it.name == tab }
+        return collections(found.id).first { it.name == name }
     }
 
     private fun openPlaylist() {

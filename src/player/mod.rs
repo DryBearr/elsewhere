@@ -16,8 +16,13 @@
 //! Video output comes with the apps' video surfaces. Until then the video track is off
 //! (sound only), except with `set_null_output`, where video is decoded and thrown away.
 
+#[cfg(target_os = "android")]
+mod android;
 mod machine;
 mod mpv;
+mod video;
+
+pub use video::{Video, by_target, set_frames_output};
 
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -66,6 +71,10 @@ pub struct PlayerState {
     pub volume: f64,
     pub has_video: bool,
     pub has_audio: bool,
+    /// The picture's width and height as shown (rotation applied), for a video.
+    pub video_size: Option<(u32, u32)>,
+    /// A picture shows (video attached and a video playing; see video.rs).
+    pub video_shown: bool,
     pub problem: Option<Problem>,
 }
 
@@ -176,11 +185,20 @@ fn configure(mpv: &Handle) -> Result<(), Problem> {
     // mixes gets no lock screen controls and no interruptions (calls) of its own.
     #[cfg(target_os = "ios")]
     required.push(("audio-exclusive", "yes"));
-    if NULL_OUTPUT.load(Ordering::SeqCst) {
+    // Video stays off until a screen attaches (video.rs).
+    if video::frames_output() {
+        required.extend([("vo", "libmpv"), ("vid", "no")]);
+        if NULL_OUTPUT.load(Ordering::SeqCst) {
+            required.push(("ao", "null"));
+        }
+    } else if NULL_OUTPUT.load(Ordering::SeqCst) {
         required.extend([("vo", "null"), ("ao", "null")]);
     } else {
         required.push(("vid", "no"));
     }
+    // Android draws into the app's Surface with OpenGL ES once one is attached.
+    #[cfg(target_os = "android")]
+    required.extend([("gpu-context", "android"), ("opengl-es", "yes")]);
     for (name, value) in required {
         mpv.set_option(name, value).map_err(|code| {
             player_problem(
@@ -232,6 +250,10 @@ fn configure(mpv: &Handle) -> Result<(), Problem> {
 
 struct Inner {
     name: String,
+    /// Its number (for Android's JNI functions, which find the player by it).
+    id: u64,
+    /// Before `mpv`: the video renderer must be freed before the handle.
+    video: Mutex<video::Slot>,
     mpv: Handle,
     machine: Mutex<Machine>,
     listener: Mutex<Option<Listener>>,
@@ -263,14 +285,18 @@ impl Player {
             .map_err(|code| start("observing properties", code))?;
         mpv.request_logs("warn")
             .map_err(|code| start("requesting logs", code))?;
+        let id = PLAYERS.fetch_add(1, Ordering::SeqCst) as u64;
         let inner = Arc::new(Inner {
-            name: format!("player-{}", PLAYERS.fetch_add(1, Ordering::SeqCst)),
+            name: format!("player-{id}"),
+            id,
+            video: Mutex::new(video::Slot::default()),
             mpv,
             machine: Mutex::new(Machine::new()),
             listener: Mutex::new(None),
             closing: AtomicBool::new(false),
             logged: AtomicUsize::new(0),
         });
+        video::register(&inner);
         let events = Arc::clone(&inner);
         health::supervise(inner.name.clone(), move || events.run())
             .map_err(|err| Problem::bug(format!("could not start the player thread: {err}")))?;
@@ -399,6 +425,13 @@ impl Player {
         self.inner.machine().state().clone()
     }
 
+    /// The player's video (off until a screen attaches; see video.rs).
+    pub fn video(&self) -> Video {
+        Video {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
     /// Sets the one listener (replacing any earlier one). It gets the current state at
     /// once, then every change, on the player's thread, in order: keep it short.
     pub fn set_listener(&self, listener: impl Fn(PlayerState) + Send + Sync + 'static) {
@@ -476,10 +509,11 @@ impl Inner {
                     }
                     Waited::Log(level, line) => self.log(&level, line),
                     Waited::FileLoaded => {
-                        let (has_video, has_audio) = self.tracks();
+                        let (has_video, has_audio, video_size) = self.tracks();
                         self.machine().apply(Event::FileLoaded {
                             has_video,
                             has_audio,
+                            video_size,
                         });
                     }
                     Waited::Event(event) => self.machine().apply(event),
@@ -497,25 +531,39 @@ impl Inner {
         }
     }
 
-    /// Which kinds of tracks the open file has.
-    fn tracks(&self) -> (bool, bool) {
+    /// Which kinds of tracks the open file has, and the first video's size as shown.
+    fn tracks(&self) -> (bool, bool, Option<(u32, u32)>) {
         let count = self
             .mpv
             .get_i64("track-list/count")
             .unwrap_or(0)
             .clamp(0, 1000);
-        let mut kinds = (false, false);
+        let mut kinds = (false, false, None);
         for index in 0..count {
-            match self
-                .mpv
-                .get_string(&format!("track-list/{index}/type"))
-                .as_deref()
-            {
+            let track = |what: &str| format!("track-list/{index}/{what}");
+            match self.mpv.get_string(&track("type")).as_deref() {
                 Some("video") => {
-                    let image = self.mpv.get_string(&format!("track-list/{index}/image"));
                     // Cover art is a still picture, not a video.
-                    if image.as_deref() != Some("yes") {
-                        kinds.0 = true;
+                    if self.mpv.get_string(&track("image")).as_deref() == Some("yes") {
+                        continue;
+                    }
+                    kinds.0 = true;
+                    let side = |what: &str| {
+                        self.mpv
+                            .get_i64(&track(what))
+                            .filter(|side| (1..=65_536).contains(side))
+                            .map(|side| side as u32)
+                    };
+                    if kinds.2.is_none()
+                        && let (Some(width), Some(height)) = (side("demux-w"), side("demux-h"))
+                    {
+                        // A phone video filmed upright is stored sideways, with a rotation.
+                        let rotation = self.mpv.get_i64(&track("demux-rotation")).unwrap_or(0);
+                        kinds.2 = Some(if rotation.rem_euclid(180) == 90 {
+                            (height, width)
+                        } else {
+                            (width, height)
+                        });
                     }
                 }
                 Some("audio") => kinds.1 = true,

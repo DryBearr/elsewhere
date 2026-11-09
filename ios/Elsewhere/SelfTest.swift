@@ -144,9 +144,11 @@ enum SelfTest {
                 try? files.moveItem(at: file, to: file.deletingPathExtension())
             }
         }
-        let id = try savePlaylist(link: "\(server)/music-playlist.html",
-                                  options: PlaylistOptions(format: .audio, lyrics: false, limit: nil))
-        say("SAVING id=\(id)")
+        let songs = try savePlaylist(link: "\(server)/music-playlist.html",
+                                     options: PlaylistOptions(format: .audio, lyrics: false, limit: nil))
+        let videos = try savePlaylist(link: "\(server)/video-playlist.html",
+                                      options: PlaylistOptions(format: .video(maxHeight: nil), lyrics: false, limit: nil))
+        say("SAVING songs=\(songs) videos=\(videos)")
     }
 
     /// Takes the file of the UI tests' playlist's second song away (put back by `music`).

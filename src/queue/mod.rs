@@ -165,12 +165,14 @@ struct Shared {
 pub struct QueuePlayer {
     messages: Sender<Message>,
     shared: Arc<Shared>,
+    video: crate::player::Video,
 }
 
 impl QueuePlayer {
     /// A new playlist player with its own engine, playing items of `library`.
     pub fn new(library: &'static Library) -> Result<QueuePlayer, Problem> {
         let player = Player::new()?;
+        let video = player.video();
         let (messages, received) = mpsc::channel();
         let engine = messages.clone();
         player.set_listener(move |state| {
@@ -220,7 +222,18 @@ impl QueuePlayer {
         );
         health::supervise(name, move || run(&actor, &received, &thread_shared))
             .map_err(|err| Problem::bug(format!("could not start the queue thread: {err}")))?;
-        Ok(QueuePlayer { messages, shared })
+        Ok(QueuePlayer {
+            messages,
+            shared,
+            video,
+        })
+    }
+
+    /// The engine's video: attach a screen to it to see the picture (player/video.rs).
+    /// It goes straight to the engine, not through the queue's thread: frames are drawn
+    /// many times a second.
+    pub fn video(&self) -> &crate::player::Video {
+        &self.video
     }
 
     /// Runs a command on the player's thread and returns how it went.

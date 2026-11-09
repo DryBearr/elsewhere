@@ -106,6 +106,8 @@ struct PlayerView: View {
 private struct PlayerTop: View {
     let queue: QueueState
     @ObservedObject private var playback = Playback.shared
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var full = false
     @State private var cover: UIImage?
     @State private var coverPath: String?
     @State private var playlist: String?
@@ -123,18 +125,22 @@ private struct PlayerTop: View {
             if let playlist {
                 Text(playlist).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
             }
-            ZStack {
-                RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.15))
-                if let cover {
-                    Image(uiImage: cover).resizable().scaledToFill()
-                        .accessibilityLabel("Cover")
-                } else {
-                    Image(systemName: "music.note").font(.system(size: 72)).foregroundStyle(.secondary)
+            if queue.playback.hasVideo {
+                video
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12).fill(Color.secondary.opacity(0.15))
+                    if let cover {
+                        Image(uiImage: cover).resizable().scaledToFill()
+                            .accessibilityLabel("Cover")
+                    } else {
+                        Image(systemName: "music.note").font(.system(size: 72)).foregroundStyle(.secondary)
+                    }
                 }
+                .aspectRatio(1, contentMode: .fit)
+                .frame(maxWidth: 360)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
             }
-            .aspectRatio(1, contentMode: .fit)
-            .frame(maxWidth: 360)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
             Text(now?.title ?? "Opening…")
                 .font(.title2.weight(.semibold))
                 .multilineTextAlignment(.center)
@@ -159,6 +165,30 @@ private struct PlayerTop: View {
         }
     }
 
+    /// The video in its own shape; full screen covers everything. Shown only while the app is
+    /// in front (in the background the sound plays on, without drawing).
+    private var video: some View {
+        let state = queue.playback
+        let shape = Double(state.videoWidth ?? 16) / Double(max(1, state.videoHeight ?? 9))
+        return ZStack(alignment: .bottomTrailing) {
+            Color.black
+            if scenePhase == .active && !full {
+                VideoView(width: state.videoWidth.map(Int.init), height: state.videoHeight.map(Int.init))
+            }
+            videoState(state.videoShown)
+            Button { full = true } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right").foregroundStyle(.white).padding(8)
+            }
+            .accessibilityLabel("Full screen")
+            .accessibilityIdentifier("full-screen")
+        }
+        .aspectRatio(min(5, max(0.2, shape)), contentMode: .fit)
+        .fullScreenCover(isPresented: $full) { FullScreenVideo(queue: queue) }
+        .onChange(of: queue.wantsPlay) { playing in UIApplication.shared.isIdleTimerDisabled = playing }
+        .onAppear { UIApplication.shared.isIdleTimerDisabled = queue.wantsPlay }
+        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+    }
+
     private func loadCover(_ path: String?) async {
         guard path != coverPath else { return }
         coverPath = path
@@ -166,6 +196,61 @@ private struct PlayerTop: View {
         guard let path else { return }
         cover = await Task.detached { Playback.loadCover(path, size: 1024) }.value
     }
+}
+
+/// The video on black, full screen; a tap shows play/pause and the way back.
+private struct FullScreenVideo: View {
+    let queue: QueueState
+    @ObservedObject private var playback = Playback.shared
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var controls = false
+
+    var body: some View {
+        let state = playback.state?.playback ?? queue.playback
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if scenePhase == .active {
+                VideoView(width: state.videoWidth.map(Int.init), height: state.videoHeight.map(Int.init))
+                    .ignoresSafeArea()
+            }
+            videoState(state.videoShown)
+            if controls {
+                VStack {
+                    Spacer()
+                    HStack(spacing: 40) {
+                        if playback.state?.wantsPlay == true {
+                            Button { playback.pause() } label: { Image(systemName: "pause.fill") }
+                                .accessibilityLabel("Pause")
+                        } else {
+                            Button { playback.resume() } label: { Image(systemName: "play.fill") }
+                                .accessibilityLabel("Play")
+                        }
+                        Button { dismiss() } label: { Image(systemName: "arrow.down.right.and.arrow.up.left") }
+                            .accessibilityLabel("Leave full screen")
+                            .accessibilityIdentifier("leave-full-screen")
+                    }
+                    .font(.title)
+                    .foregroundStyle(.white)
+                    .padding(.bottom, 32)
+                }
+            }
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { controls.toggle() }
+        // The queue emptied: nothing to show.
+        .onChange(of: playback.state?.entryCount ?? 0) { count in if count == 0 { dismiss() } }
+    }
+}
+
+/// Says to screen readers (and the UI tests) whether the picture shows.
+private func videoState(_ shown: Bool) -> some View {
+    Color.clear
+        .frame(width: 1, height: 1)
+        .accessibilityElement()
+        .accessibilityLabel("Video")
+        .accessibilityValue(shown ? "shown" : "off")
+        .accessibilityIdentifier("video-state")
 }
 
 /// The position slider and the times; while dragging, the slider follows the finger only.

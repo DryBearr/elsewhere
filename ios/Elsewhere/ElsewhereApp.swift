@@ -2,7 +2,7 @@ import SwiftUI
 
 /// The app's tabs. Each screen is its own file; list it here to plug it in.
 enum Tab: Hashable {
-    case music, downloads, add, library
+    case music, videos, downloads, add, library
 }
 
 @main
@@ -22,6 +22,10 @@ struct ElsewhereApp: App {
                     .playerBar()
                     .tabItem { Label("Music", systemImage: "music.note.list") }
                     .tag(Tab.music)
+                NavigationStack { MusicView(tab: "Videos") }
+                    .playerBar()
+                    .tabItem { Label("Videos", systemImage: "film") }
+                    .tag(Tab.videos)
                 NavigationStack { DownloadsView() }
                     .playerBar()
                     .tabItem { Label("Downloads", systemImage: "arrow.down.circle") }

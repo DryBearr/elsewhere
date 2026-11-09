@@ -40,6 +40,7 @@ import io.github.drybearr.elsewhere.playback.PlayerScreen
 /** The app's tabs. Each screen is its own file; list it here to plug it in. */
 private enum class Tab(val label: String, val icon: ImageVector) {
     Music("Music", PlayerIcons.Music),
+    Videos("Videos", PlayerIcons.Movie),
     Downloads("Downloads", Icons.AutoMirrored.Filled.List),
     Add("Add", Icons.Filled.Add),
     Library("Library", Icons.Filled.Home),
@@ -112,7 +113,8 @@ private fun Tabs(
                 job != null -> JobDetailScreen(job) { setJob(null) }
                 tab == Tab.Downloads.ordinal -> DownloadsScreen { setJob(it) }
                 tab == Tab.Add.ordinal -> AddScreen { setTab(Tab.Downloads.ordinal) }
-                tab == Tab.Music.ordinal -> MusicScreen()
+                tab == Tab.Music.ordinal -> MusicScreen("Music")
+                tab == Tab.Videos.ordinal -> MusicScreen("Videos")
                 else -> LibraryScreen()
             }
         }
