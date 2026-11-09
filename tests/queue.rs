@@ -998,3 +998,32 @@ fn volume_goes_down_and_up_within_range() {
         Kind::Input
     );
 }
+
+#[test]
+fn previous_entry_goes_back_however_far_in() {
+    let shelf = shelf("previous-entry");
+    let a = shelf.item("A", Some("long.m4a"));
+    let b = shelf.item("B", Some("long.m4a"));
+    let (queue, _) = queue(&shelf);
+    assert_eq!(
+        queue.command(Command::PreviousEntry).unwrap_err().kind,
+        Kind::Input,
+        "nothing queued"
+    );
+    play(&queue, &[a, b], 1);
+    wait(&queue, "B past 3.2 s", |state| {
+        state.playback.position_ms > 3_200
+    });
+    queue.command(Command::PreviousEntry).unwrap();
+    assert_eq!(
+        current_item(&queue.state()),
+        Some(a),
+        "to A, though 3 s into B"
+    );
+    queue.command(Command::PreviousEntry).unwrap();
+    assert_eq!(
+        current_item(&queue.state()),
+        Some(a),
+        "the first stays the first"
+    );
+}

@@ -177,6 +177,12 @@ impl CoreQueue {
         Ok(self.queue.command(Command::Previous)?)
     }
 
+    /// Goes to the entry before, however far into this one (for system controls that
+    /// decide about starting over themselves).
+    pub fn previous_entry(&self) -> Result<(), ApiError> {
+        Ok(self.queue.command(Command::PreviousEntry)?)
+    }
+
     pub fn seek(&self, position_ms: i64) -> Result<(), ApiError> {
         Ok(self.queue.command(Command::Seek(position_ms))?)
     }

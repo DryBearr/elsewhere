@@ -119,6 +119,9 @@ pub enum Command {
     Next,
     /// Starts the entry over, or this early in it, goes to the one before.
     Previous,
+    /// Goes to the entry before, however far into this one (for system controls that make
+    /// the start-over decision themselves).
+    PreviousEntry,
     Seek(i64),
     /// Makes the entry with this key current.
     Jump(u64),
@@ -441,6 +444,16 @@ impl Actor {
                 let position = self.player.state().position_ms;
                 if self.playing.is_some() && position > RESTART_AFTER_MS {
                     return self.player.seek(0);
+                }
+                self.leave_current();
+                self.order.previous();
+                self.failures = 0;
+                self.open_current();
+                Ok(())
+            }
+            Command::PreviousEntry => {
+                if self.order.current().is_none() {
+                    return Err(nothing_queued());
                 }
                 self.leave_current();
                 self.order.previous();

@@ -226,7 +226,9 @@ pub fn item_file(id: i64) -> Result<String, ApiError> {
 /// returns its item id (the same file again: the same id).
 #[uniffi::export]
 pub fn add_file(tab_id: i64, path: String) -> Result<i64, ApiError> {
-    Ok(core()?.library.add_file(tab_id, std::path::Path::new(&path))?)
+    Ok(core()?
+        .library
+        .add_file(tab_id, std::path::Path::new(&path))?)
 }
 
 /// Where to start an item.
