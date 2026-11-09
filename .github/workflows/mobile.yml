@@ -1,6 +1,7 @@
-# Runs the yt-dlp tests (tests/ytdlp.rs) on an Android emulator and an iOS simulator,
-# with the same Python, yt-dlp and (on Android) ffmpeg the phone builds bundle. Both jobs
-# also start the real app and check that yt-dlp starts.
+# Runs the core's tests on an Android emulator and an iOS simulator, with the same Python,
+# yt-dlp, ffmpeg (Android) and libmpv the phone builds bundle, then the real app: its job
+# path and its UI tests. On iOS the core's tests (ios-core) and the app (ios-app) run side
+# by side. Run by hand, `phones` picks one phone while fixing it; a merge needs both.
 name: Mobile
 
 on:
@@ -8,12 +9,19 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      phones:
+        description: Which phones (both before a merge)
+        type: choice
+        options: [both, android, ios]
+        default: both
 
 permissions:
   contents: read
 
 jobs:
   android:
+    if: inputs.phones != 'ios'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -139,10 +147,21 @@ jobs:
             bash scripts/selftest_android.sh Elsewhere-x86_64.apk
             adb logcat -c; gradle -p android connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.server=http://10.0.2.2:8765 || { adb logcat -d -s Elsewhere:I AndroidRuntime:E | tail -60; adb logcat -d -s TestRunner:E | grep -v '	at ' | tail -400; exit 1; }
 
-  ios:
+
+  # The core's tests on the simulator. The app's checks run next to it (ios-app).
+  ios-core:
+    if: inputs.phones != 'android'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
+
+      # The simulator's first boot takes minutes (it migrates its data): it boots while
+      # everything is built, and "Wait for the simulator" waits for the rest.
+      - name: Start booting a simulator
+        run: |
+          udid=$(xcrun simctl list devices available --json | python3 -c "import json, sys; devices = json.load(sys.stdin)['devices']; print(next(d['udid'] for runtime, found in devices.items() if 'iOS' in runtime for d in found if d['name'].startswith('iPhone')))")
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          nohup xcrun simctl boot "$udid" > "$RUNNER_TEMP/boot.log" 2>&1 &
 
       # The runner's own Python 3 runs our scripts; downloading another one from GitHub
       # failed with 504 errors too often.
@@ -174,13 +193,6 @@ jobs:
       - name: Build libmpv for the simulator
         run: scripts/ios_mpv.sh simulator
 
-      - name: Start a simulator
-        run: |
-          udid=$(xcrun simctl list devices available --json | python3 -c "import json, sys; devices = json.load(sys.stdin)['devices']; print(next(d['udid'] for runtime, found in devices.items() if 'iOS' in runtime for d in found if d['name'].startswith('iPhone')))")
-          echo "UDID=$udid" >> "$GITHUB_ENV"
-          xcrun simctl boot "$udid"
-          xcrun simctl bootstatus "$udid" -b
-
       - name: Build the tests for the simulator
         run: |
           slice="$PWD/target/ios/Python.xcframework/ios-arm64_x86_64-simulator"
@@ -199,6 +211,11 @@ jobs:
           cp -R "$slice/lib-arm64/python3.15/" run/python/lib/python3.15/
           find run -name '*.so' -exec codesign --force --sign - {} \;
           codesign --force --sign - run/Frameworks/Python.framework run/Frameworks/mpv.framework run/player-tests run/queue-tests run/api_queue-tests run/video-tests run/elsewhere-tests run/recovery-tests run/ytdlp-tests run/playlists-tests run/api-tests run/api_lazy-tests
+
+      - name: Wait for the simulator
+        timeout-minutes: 15
+        run: |
+          xcrun simctl bootstatus "$UDID" -b || { cat "$RUNNER_TEMP/boot.log"; exit 1; }
 
       - name: Run the tests in the simulator
         run: |
@@ -228,6 +245,51 @@ jobs:
           SIMCTL_CHILD_YTDLP_TEST_PYTHON_HOME="$PWD/run/python" \
             xcrun simctl spawn "$UDID" "$PWD/run/ytdlp-tests" --ignored real_site
 
+  # The real app on the simulator: the job path through it, and its UI tests.
+  ios-app:
+    if: inputs.phones != 'android'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The simulator's first boot takes minutes (it migrates its data): it boots while
+      # everything is built, and "Wait for the simulator" waits for the rest.
+      - name: Start booting a simulator
+        run: |
+          udid=$(xcrun simctl list devices available --json | python3 -c "import json, sys; devices = json.load(sys.stdin)['devices']; print(next(d['udid'] for runtime, found in devices.items() if 'iOS' in runtime for d in found if d['name'].startswith('iPhone')))")
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          nohup xcrun simctl boot "$udid" > "$RUNNER_TEMP/boot.log" 2>&1 &
+
+      # The runner's own Python 3 runs our scripts; downloading another one from GitHub
+      # failed with 504 errors too often.
+      - name: Python on the runner
+        run: python3 --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-simulator-app
+
+      - name: Prepare Python and yt-dlp for iOS
+        run: python3 scripts/mobile_python.py ios
+
+      - name: Install iOS build tools
+        run: |
+          rustup target add aarch64-apple-ios-sim aarch64-apple-ios
+          brew install xcodegen pkgconf
+
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv-ios
+          key: mpv-ios-simulator-${{ hashFiles('scripts/ios_mpv.sh', 'scripts/mpv_sources.sh') }}
+
+      - uses: actions/cache@v4
+        with:
+          path: target/mpv-ios/sources
+          key: mpv-ios-sources-${{ hashFiles('scripts/mpv_sources.sh') }}
+
+      - name: Build libmpv for the simulator
+        run: scripts/ios_mpv.sh simulator
+
       - name: Build the app for the simulator
         run: |
           scripts/ios_rust.sh simulator debug
@@ -241,6 +303,11 @@ jobs:
             -destination "id=$UDID" \
             -derivedDataPath "$RUNNER_TEMP/derived" \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=YES
+
+      - name: Wait for the simulator
+        timeout-minutes: 15
+        run: |
+          xcrun simctl bootstatus "$UDID" -b || { cat "$RUNNER_TEMP/boot.log"; exit 1; }
 
       - name: Check the job path through the app
         run: |
