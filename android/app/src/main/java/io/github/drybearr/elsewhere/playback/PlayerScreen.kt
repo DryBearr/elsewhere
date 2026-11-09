@@ -58,6 +58,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -273,10 +274,12 @@ private fun Video(queue: QueueState, modifier: Modifier) {
 /** The SurfaceView mpv draws into; the screen stays on while the video plays. */
 @Composable
 private fun VideoSurfaceView(playing: Boolean, modifier: Modifier) {
+    // What the view went through, for the UI tests (and screen readers: "video, attached").
+    var status by remember { mutableStateOf("") }
     AndroidView(
-        factory = { context -> VideoView(context) },
+        factory = { context -> VideoView(context) { said -> status = said } },
         update = { view -> view.keepScreenOn = playing },
-        modifier = modifier.testTag("video"),
+        modifier = modifier.testTag("video").semantics { stateDescription = status },
     )
 }
 

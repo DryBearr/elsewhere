@@ -182,7 +182,7 @@ class MusicTest {
         // The queue, below the player: rows with their titles; tap one to play it.
         ui.waitUntil(15_000) { ui.onAllNodes(hasTestTag("player-list")).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("player-list").performScrollToNode(hasTestTag("queue-1"))
-        waitRows("song second") { rowTitle("queue-1") == "song" }
+        waitRows("song second") { shownRowTitle("queue-1") == "song" }
         ui.onNodeWithTag("queue-1").performClick()
         waitFor("song from the queue") { it.nowPlaying?.title == "song" && it.wantsPlay }
         ui.onNodeWithContentDescription("Pause").performClick()
@@ -190,7 +190,7 @@ class MusicTest {
         // Play next brings long after song; remove takes it out again.
         menu("queue-menu-0", "Play next")
         waitFor("long next") { it.hasNext && it.current == 0u }
-        waitRows("long second") { rowTitle("queue-1") == "long" }
+        waitRows("long second") { shownRowTitle("queue-1") == "long" }
         menu("queue-menu-1", "Remove")
         waitFor("one left") { it.entryCount == 1u && !it.hasNext }
         // Removing the last one empties the queue: the player closes itself.
@@ -298,6 +298,12 @@ class MusicTest {
         ui.onAllNodes(hasTestTag(tag), useUnmergedTree = true).fetchSemanticsNodes().firstOrNull()
             ?.config?.getOrNull(SemanticsProperties.Text)
             ?.joinToString("") { it.text }
+
+    /** A queue row's title, scrolled into view first (it may be below the player). */
+    private fun shownRowTitle(tag: String): String? {
+        runCatching { ui.onNodeWithTag("player-list").performScrollToNode(hasTestTag(tag)) }
+        return rowTitle(tag)
+    }
 
     /** The first text inside the node with this tag (a row's title). */
     private fun rowTitle(tag: String): String? =

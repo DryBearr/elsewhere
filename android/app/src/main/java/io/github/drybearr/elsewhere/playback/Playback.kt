@@ -302,16 +302,18 @@ object Playback {
      * A Surface to show video on (main thread; VideoView). The newest one wins: going full
      * screen makes a second view, whose Surface can come before the first one goes.
      */
-    fun attachSurface(surface: Surface) {
+    fun attachSurface(surface: Surface): String {
         val number = target
         if (number == 0L) {
             videoEvent("a video surface waits for the queue")
             waitingSurface = surface
-            return
+            return "waiting for the queue"
         }
         waitingSurface = null
         shownSurface = if (VideoSurface.attach(number, surface)) surface else null
-        videoEvent(if (shownSurface == null) "the video surface was not taken by $number" else "video surface attached to $number")
+        val said = if (shownSurface == null) "not taken by $number" else "attached to $number"
+        videoEvent("video surface $said")
+        return said
     }
 
     fun resizeSurface(surface: Surface, width: Int, height: Int) {
