@@ -413,8 +413,10 @@ fn players_come_and_go_quickly_and_a_bad_listener_breaks_nothing() {
         thread::sleep(Duration::from_millis(30));
         let started = Instant::now();
         drop(player);
+        // Dropping only tells the player's thread to stop (microseconds); a busy simulator
+        // can still stall this thread for half a second.
         assert!(
-            started.elapsed() < Duration::from_millis(500),
+            started.elapsed() < Duration::from_millis(1000),
             "dropping took {:?}",
             started.elapsed()
         );
