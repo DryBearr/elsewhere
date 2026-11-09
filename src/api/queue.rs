@@ -61,6 +61,10 @@ pub struct QueueState {
     pub wants_play: bool,
     /// The current entry, for the lock screen and the notification.
     pub now_playing: Option<NowPlaying>,
+    /// Whether next has somewhere to go: show or hide the button.
+    pub has_next: bool,
+    /// Whether previous goes to another entry (else it starts the current one over).
+    pub has_previous: bool,
 }
 
 /// The current entry as a lock screen shows it.
@@ -279,6 +283,8 @@ impl From<queue::QueueState> for QueueState {
                 cover: now.cover.map(|cover| cover.to_string_lossy().into_owned()),
                 media: super::library::media(now.media),
             }),
+            has_next: state.has_next,
+            has_previous: state.has_previous,
         }
     }
 }

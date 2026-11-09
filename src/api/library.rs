@@ -222,6 +222,13 @@ pub fn item_file(id: i64) -> Result<String, ApiError> {
         .into_owned())
 }
 
+/// Adds a file already inside a tab's folder (`<media>/<tab name>/...`) to the library;
+/// returns its item id (the same file again: the same id).
+#[uniffi::export]
+pub fn add_file(tab_id: i64, path: String) -> Result<i64, ApiError> {
+    Ok(core()?.library.add_file(tab_id, std::path::Path::new(&path))?)
+}
+
 /// Where to start an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Record)]
 pub struct PlayStart {

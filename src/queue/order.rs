@@ -251,6 +251,23 @@ impl Order {
         true
     }
 
+    /// Whether `next` (a skip) has somewhere to go: a later entry, or round again with repeat.
+    pub fn has_next(&self) -> bool {
+        match self.at {
+            Some(at) => at + 1 < self.order.len() || self.repeat != Repeat::Off,
+            None => false,
+        }
+    }
+
+    /// Whether `previous` can go to another entry (an earlier one, or the last with repeat
+    /// all); otherwise it starts the current one over.
+    pub fn has_previous(&self) -> bool {
+        match self.at {
+            Some(at) => at > 0 || (self.repeat == Repeat::All && self.order.len() > 1),
+            None => false,
+        }
+    }
+
     /// Back to the first entry of the play order.
     pub fn restart(&mut self) {
         if !self.order.is_empty() {
@@ -673,5 +690,39 @@ mod tests {
         let mut empty = Order::new(1);
         empty.restart();
         assert_eq!(empty.current(), None);
+    }
+
+    #[test]
+    fn next_and_previous_say_where_they_can_go() {
+        let mut order = Order::new(1);
+        assert!(!order.has_next() && !order.has_previous(), "empty");
+        order.set(&[1, 2, 3], 0);
+        assert!(order.has_next() && !order.has_previous());
+        order.next(false);
+        assert!(order.has_next() && order.has_previous());
+        order.next(false);
+        assert!(
+            !order.has_next() && order.has_previous(),
+            "the last, no repeat"
+        );
+        order.repeat = Repeat::All;
+        assert!(order.has_next(), "repeat all goes round");
+        order.repeat = Repeat::One;
+        assert!(
+            order.has_next(),
+            "a skip with repeat one still moves on (round)"
+        );
+        order.restart();
+        assert!(
+            !order.has_previous(),
+            "the first, repeat one: previous starts it over"
+        );
+        order.repeat = Repeat::All;
+        assert!(order.has_previous(), "the first, repeat all: to the last");
+        let mut single = Order::new(1);
+        single.set(&[1], 0);
+        single.repeat = Repeat::All;
+        assert!(!single.has_previous(), "one entry: only itself");
+        assert!(single.has_next());
     }
 }

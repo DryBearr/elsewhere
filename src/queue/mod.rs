@@ -75,6 +75,10 @@ pub struct QueueState {
     pub wants_play: bool,
     /// What the current entry is, for lock screens and notifications.
     pub now_playing: Option<NowPlaying>,
+    /// Whether next has somewhere to go (a later entry, or round again with repeat).
+    pub has_next: bool,
+    /// Whether previous can go to another entry (else it starts the current one over).
+    pub has_previous: bool,
 }
 
 /// The current entry as a lock screen shows it.
@@ -175,6 +179,8 @@ impl QueuePlayer {
                 skipped: Vec::new(),
                 wants_play: false,
                 now_playing: None,
+                has_next: false,
+                has_previous: false,
             }),
             listener: Mutex::new(None),
         });
@@ -359,6 +365,8 @@ impl Actor {
             skipped: self.skipped.clone(),
             wants_play: self.wants_play && !self.finished && self.order.current().is_some(),
             now_playing: self.now.clone(),
+            has_next: !self.finished && self.order.has_next(),
+            has_previous: self.order.has_previous(),
         }
     }
 

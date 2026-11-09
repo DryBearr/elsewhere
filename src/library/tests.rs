@@ -1460,3 +1460,125 @@ fn stored_lengths_of_zero_or_less_count_as_unknown() {
         45 * MINUTE
     );
 }
+
+// --- Adding files that are already in a tab's folder ------------------------------------
+
+#[test]
+fn a_file_in_a_tab_folder_is_added_once() {
+    let f = fixture("add-file");
+    let folder = f.media.join("Music/Album");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("01 Song.m4a"), b"audio").unwrap();
+    let id = f
+        .library
+        .add_file(f.music_tab, &folder.join("01 Song.m4a"))
+        .unwrap();
+    let detail = f.library.item(id).unwrap();
+    assert_eq!(
+        (
+            detail.summary.title.as_str(),
+            detail.summary.kind,
+            detail.summary.missing
+        ),
+        ("01 Song", ItemKind::Entry, false)
+    );
+    assert_eq!(
+        f.library.item_file(id).unwrap(),
+        fs::canonicalize(folder.join("01 Song.m4a")).unwrap()
+    );
+    assert_eq!(
+        f.library
+            .add_file(f.music_tab, &folder.join("01 Song.m4a"))
+            .unwrap(),
+        id,
+        "the same file, the same id"
+    );
+    // Through a link inside the tab folder to the same file: still the same item.
+    std::os::unix::fs::symlink(folder.join("01 Song.m4a"), f.music.join("link.m4a")).unwrap();
+    assert_eq!(
+        f.library
+            .add_file(f.music_tab, &f.music.join("link.m4a"))
+            .unwrap(),
+        id
+    );
+    // A file that went missing and came back is found again.
+    f.db.execute("UPDATE item SET missing_since = 1 WHERE id = ?1", [id])
+        .unwrap();
+    assert_eq!(
+        f.library
+            .add_file(f.music_tab, &folder.join("01 Song.m4a"))
+            .unwrap(),
+        id
+    );
+    assert!(!f.library.item(id).unwrap().summary.missing);
+}
+
+#[test]
+fn files_outside_their_tab_folder_or_not_files_are_refused() {
+    let f = fixture("add-refused");
+    let movies: i64 =
+        f.db.query_row("SELECT id FROM category WHERE name = 'Movies'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    fs::write(f.music.join("song.m4a"), b"audio").unwrap();
+    fs::write(f.media.join("loose.m4a"), b"audio").unwrap();
+    fs::write(f.dir.join("outside.m4a"), b"audio").unwrap();
+    std::os::unix::fs::symlink(f.dir.join("outside.m4a"), f.music.join("escape.m4a")).unwrap();
+    fs::create_dir_all(f.music.join("a folder")).unwrap();
+    for (tab, path, kind, what) in [
+        (
+            movies,
+            f.music.join("song.m4a"),
+            ProblemKind::Input,
+            "in another tab's folder",
+        ),
+        (
+            f.music_tab,
+            f.media.join("loose.m4a"),
+            ProblemKind::Input,
+            "in the media folder, not a tab's",
+        ),
+        (
+            f.music_tab,
+            f.dir.join("outside.m4a"),
+            ProblemKind::Input,
+            "outside the media folder",
+        ),
+        (
+            f.music_tab,
+            f.music.join("escape.m4a"),
+            ProblemKind::Input,
+            "a link out of the media folder",
+        ),
+        (
+            f.music_tab,
+            f.music.join("a folder"),
+            ProblemKind::Input,
+            "a folder",
+        ),
+        (
+            f.music_tab,
+            f.music.join("missing.m4a"),
+            ProblemKind::Unavailable,
+            "missing",
+        ),
+        (
+            9999,
+            f.music.join("song.m4a"),
+            ProblemKind::Unavailable,
+            "an unknown tab",
+        ),
+    ] {
+        let problem = f.library.add_file(tab, &path).unwrap_err();
+        assert_eq!(
+            (problem.kind, problem.retry),
+            (kind, false),
+            "{what}: {problem:?}"
+        );
+    }
+    let items: i64 =
+        f.db.query_row("SELECT count(*) FROM item", [], |row| row.get(0))
+            .unwrap();
+    assert_eq!(items, 0, "nothing was added");
+}
