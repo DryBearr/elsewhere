@@ -15,6 +15,8 @@ struct VideoView: UIViewRepresentable {
     func makeUIView(context: Context) -> LayerView {
         let view = LayerView()
         view.backgroundColor = .black
+        // Taps go to the player around it (full screen shows its controls on a tap).
+        view.isUserInteractionEnabled = false
         view.display.videoGravity = .resizeAspect
         context.coordinator.layer = view.display
         context.coordinator.setSize(width: width, height: height)

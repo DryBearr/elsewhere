@@ -19,6 +19,34 @@ use crate::problem::{Kind, Problem};
 /// vo=libmpv: the app draws frames itself (iOS has no other video output).
 static FRAMES_OUTPUT: AtomicBool = AtomicBool::new(false);
 
+/// Hardware decoders for frames drawn by the app: decoded in hardware, copied back to
+/// memory (the software renderer needs the pixels). mpv falls back to the CPU when the
+/// phone has no decoder for the codec (or none at all).
+const FRAMES_DECODERS: &str = if cfg!(target_os = "ios") {
+    "videotoolbox-copy"
+} else if cfg!(target_os = "android") {
+    "mediacodec-copy"
+} else {
+    "auto-copy-safe"
+};
+
+/// Hardware decoders for an Android Surface: straight into the output (zero copy) or, if
+/// that does not work there, copied back; else the CPU.
+const SURFACE_DECODERS: &str = "mediacodec,mediacodec-copy";
+
+/// Video is coming: decode it in hardware where the phone can (audio alone needs none,
+/// so players start with hwdec=no). A failure leaves the CPU decoding: still a picture.
+fn hardware_decoding(inner: &Inner, decoders: &str) {
+    if let Err(code) = inner.mpv.set_string("hwdec", decoders) {
+        crate::logs::warn(
+            "player",
+            format!("{}: hardware decoding not set", inner.name),
+        )
+        .detail(inner.mpv.error_text(code))
+        .write();
+    }
+}
+
 /// Largest frame that can be drawn (8K).
 const MAX_SIDE: u32 = 8192;
 
@@ -110,6 +138,7 @@ impl Video {
         }
         *lock(&slot.on_frame) = Some(Arc::new(on_frame));
         slot.attached = Attached::Frames;
+        hardware_decoding(&inner, FRAMES_DECODERS);
         inner
             .mpv
             .set_string("vid", "auto")
@@ -169,6 +198,7 @@ impl Video {
                 .map_err(|code| mpv_problem(&format!("option {name}"), code, &inner))
         };
         set("wid", &window.to_string())?;
+        hardware_decoding(&inner, SURFACE_DECODERS);
         inner
             .mpv
             .set_string("vo", "gpu")

@@ -63,7 +63,13 @@ class MusicTest {
     @After
     fun putBack() {
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        instrumentation.runOnMainSync { Playback.stop() }
+        // The tests share one app (and its one player): each leaves it as it found it.
+        instrumentation.runOnMainSync {
+            Playback.stop()
+            Playback.setRepeat(RepeatMode.OFF)
+            Playback.setShuffle(false)
+            Playback.setSpeed(1.0)
+        }
         // The song file the test took away comes back for the next run (the debug build
         // carries tests/media).
         removed?.let { file ->
@@ -221,12 +227,17 @@ class MusicTest {
         ui.onNode(hasText("Play") and hasClickAction()).performClick()
         // Without a screen for it, a video plays its sound only.
         waitFor("long playing") { it.nowPlaying?.title == "long" && it.playback.status == PlayerStatus.PLAYING }
+        // On repeat: the playlist is 10 s, and the test takes longer.
+        InstrumentationRegistry.getInstrumentation().runOnMainSync { Playback.setRepeat(RepeatMode.ALL) }
+        waitFor("repeat all") { it.repeat == RepeatMode.ALL }
         waitFor("its shape") { it.playback.hasVideo && it.playback.videoWidth == 96u && it.playback.videoHeight == 64u }
         assertTrue("no picture without a screen", Playback.state.value?.playback?.videoShown == false)
 
         // The player shows the picture; closing it turns the picture off, the sound plays on.
         ui.onNodeWithTag("open-player").performClick()
         waitFor("the picture shown", 20_000) { it.playback.videoShown }
+        // Decoded by the phone's hardware (MediaCodec), straight into the Surface.
+        waitFor("the hardware decoding", 10_000) { it.playback.hardwareDecoder?.startsWith("mediacodec") == true }
         ui.onNodeWithContentDescription("Close player").performClick()
         waitFor("the picture off") { !it.playback.videoShown }
         val at = Playback.state.value!!.playback.positionMs
@@ -238,7 +249,9 @@ class MusicTest {
         ui.onNodeWithContentDescription("Full screen").performClick()
         ui.waitUntil(10_000) { ui.onAllNodes(hasTestTag("video-full")).fetchSemanticsNodes().isNotEmpty() }
         waitFor("the picture full screen", 20_000) { it.playback.videoShown }
+        ui.waitForIdle()
         ui.onNodeWithTag("video-full").performClick()
+        ui.waitUntil(10_000) { ui.onAllNodes(hasContentDescription("Leave full screen")).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithContentDescription("Leave full screen").performClick()
         ui.waitUntil(10_000) { ui.onAllNodes(hasTestTag("video-full")).fetchSemanticsNodes().isEmpty() }
         waitFor("the picture back in the player", 20_000) { it.playback.videoShown }

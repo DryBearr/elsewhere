@@ -45,6 +45,8 @@ pub(super) enum Event {
     Volume(f64),
     /// Whether the video output shows a picture.
     VideoShown(bool),
+    /// The hardware decoder in use (none: software).
+    HardwareDecoder(Option<String>),
     /// An error line from mpv: kept as the detail of a failure that follows.
     ErrorLog(String),
 }
@@ -96,6 +98,7 @@ impl Machine {
                 has_audio: false,
                 video_size: None,
                 video_shown: false,
+                hardware_decoder: None,
                 problem: None,
             },
             expected: None,
@@ -267,6 +270,12 @@ impl Machine {
             Event::Volume(volume) => {
                 if volume != self.state.volume {
                     self.state.volume = volume;
+                    self.touch(true);
+                }
+            }
+            Event::HardwareDecoder(name) => {
+                if name != self.state.hardware_decoder {
+                    self.state.hardware_decoder = name;
                     self.touch(true);
                 }
             }

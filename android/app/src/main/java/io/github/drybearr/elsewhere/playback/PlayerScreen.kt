@@ -63,8 +63,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -100,6 +98,11 @@ fun PlayerScreen(onClose: () -> Unit) {
         Playback.wantEntries(true)
         onDispose { Playback.wantEntries(false) }
     }
+    var full by rememberSaveable { mutableStateOf(false) }
+    if (full && queue.playback.hasVideo) {
+        FullScreenVideo(queue) { full = false }
+        return
+    }
     val entries by Playback.entries.collectAsState()
     // Rows by item id (null: no longer in the library), read as they come into view.
     val rows = remember { mutableStateMapOf<Long, ItemSummary?>() }
@@ -121,7 +124,7 @@ fun PlayerScreen(onClose: () -> Unit) {
 
     Surface(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize().testTag("player-list"), state = scroll) {
-            item(key = "player") { Player(queue, onClose) }
+            item(key = "player") { Player(queue, onClose) { full = true } }
             item(key = "next") {
                 Text(
                     "Queue · ${queue.entryCount}",
@@ -149,7 +152,7 @@ fun PlayerScreen(onClose: () -> Unit) {
 
 /** The top of the screen: cover, titles, position, controls. */
 @Composable
-private fun Player(queue: QueueState, onClose: () -> Unit) {
+private fun Player(queue: QueueState, onClose: () -> Unit, onFullScreen: () -> Unit) {
     val playback = queue.playback
     val now = queue.nowPlaying
     val message by Playback.message.collectAsState()
@@ -180,7 +183,7 @@ private fun Player(queue: QueueState, onClose: () -> Unit) {
             Box(Modifier.size(48.dp))
         }
         if (playback.hasVideo) {
-            Video(queue, Modifier.padding(vertical = 12.dp))
+            Video(queue, onFullScreen, Modifier.padding(vertical = 12.dp))
         } else Box(
             Modifier
                 .padding(vertical = 12.dp)
@@ -227,43 +230,45 @@ private fun Player(queue: QueueState, onClose: () -> Unit) {
     }
 }
 
-/**
- * The video, in its own shape (black around it while the size is not known yet). Full
- * screen covers everything in black; tapping it shows play/pause and the way back.
- */
+/** The video in its own shape (black around it while the size is not known yet). */
 @Composable
-private fun Video(queue: QueueState, modifier: Modifier) {
-    var full by rememberSaveable { mutableStateOf(false) }
+private fun Video(queue: QueueState, onFullScreen: () -> Unit, modifier: Modifier) {
     val playback = queue.playback
     val shape = (playback.videoWidth?.toFloat() ?: 16f) / (playback.videoHeight?.toFloat() ?: 9f)
-    if (full) {
-        var controls by remember { mutableStateOf(false) }
-        Dialog(
-            onDismissRequest = { full = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
-        ) {
-            Box(
-                Modifier.fillMaxSize().background(Color.Black).clickable { controls = !controls }.testTag("video-full"),
-                contentAlignment = Alignment.Center,
-            ) {
-                VideoSurfaceView(queue.wantsPlay, Modifier.fillMaxWidth().aspectRatio(shape.coerceIn(0.2f, 5f)))
-                if (controls) {
-                    Row(Modifier.align(Alignment.BottomCenter).padding(24.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-                        FilledIconButton(onClick = { if (queue.wantsPlay) Playback.pause() else Playback.resume() }) {
-                            if (queue.wantsPlay) Icon(PlayerIcons.Pause, contentDescription = "Pause") else Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
-                        }
-                        FilledIconButton(onClick = { full = false }) {
-                            Icon(Icons.Filled.Close, contentDescription = "Leave full screen")
-                        }
+    Box(modifier.fillMaxWidth().background(Color.Black), contentAlignment = Alignment.Center) {
+        VideoSurfaceView(queue.wantsPlay, Modifier.fillMaxWidth().aspectRatio(shape.coerceIn(0.2f, 5f)))
+        IconButton(onClick = onFullScreen, modifier = Modifier.align(Alignment.BottomEnd)) {
+            Icon(PlayerIcons.FullScreen, contentDescription = "Full screen", tint = Color.White)
+        }
+    }
+}
+
+/**
+ * The video full screen, on black, in the player's own window (a dialog's window kept
+ * re-making the Surface); a tap shows play/pause and the way back.
+ */
+@Composable
+private fun FullScreenVideo(queue: QueueState, onLeave: () -> Unit) {
+    BackHandler(onBack = onLeave)
+    var controls by remember { mutableStateOf(false) }
+    val playback = queue.playback
+    val shape = (playback.videoWidth?.toFloat() ?: 16f) / (playback.videoHeight?.toFloat() ?: 9f)
+    Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
+        VideoSurfaceView(queue.wantsPlay, Modifier.fillMaxWidth().aspectRatio(shape.coerceIn(0.2f, 5f)))
+        // Over the video: a SurfaceView keeps the taps that land on it.
+        Box(Modifier.matchParentSize().clickable { controls = !controls }.testTag("video-full"))
+        if (controls) {
+            Row(Modifier.align(Alignment.BottomCenter).padding(24.dp), horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                FilledIconButton(onClick = { if (queue.wantsPlay) Playback.pause() else Playback.resume() }) {
+                    if (queue.wantsPlay) {
+                        Icon(PlayerIcons.Pause, contentDescription = "Pause")
+                    } else {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = "Play")
                     }
                 }
-            }
-        }
-    } else {
-        Box(modifier.fillMaxWidth().background(Color.Black), contentAlignment = Alignment.Center) {
-            VideoSurfaceView(queue.wantsPlay, Modifier.fillMaxWidth().aspectRatio(shape.coerceIn(0.2f, 5f)))
-            IconButton(onClick = { full = true }, modifier = Modifier.align(Alignment.BottomEnd)) {
-                Icon(PlayerIcons.FullScreen, contentDescription = "Full screen", tint = Color.White)
+                FilledIconButton(onClick = onLeave) {
+                    Icon(Icons.Filled.Close, contentDescription = "Leave full screen")
+                }
             }
         }
     }

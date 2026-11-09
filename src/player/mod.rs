@@ -75,6 +75,8 @@ pub struct PlayerState {
     pub video_size: Option<(u32, u32)>,
     /// A picture shows (video attached and a video playing; see video.rs).
     pub video_shown: bool,
+    /// The hardware decoder decoding the video (MediaCodec, VideoToolbox); none: the CPU.
+    pub hardware_decoder: Option<String>,
     pub problem: Option<Problem>,
 }
 
@@ -171,9 +173,8 @@ fn configure(mpv: &Handle) -> Result<(), Problem> {
         }
     }
     let mut required = vec![
-        // Software decoding until video goes to a screen. Hardware decoders crashed on
-        // Android when players were dropped while starting up (MediaCodec); they come
-        // back with the video surfaces, with their own stress tests.
+        // The CPU decodes until video goes to a screen (sound alone needs no hardware);
+        // video.rs turns the hardware decoders on with the picture.
         ("hwdec", "no"),
         ("config", "no"),
         ("access-references", "no"),

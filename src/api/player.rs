@@ -39,6 +39,8 @@ pub struct PlayerState {
     pub video_height: Option<u32>,
     /// A picture shows: video is attached and a video plays.
     pub video_shown: bool,
+    /// The hardware decoder decoding the video (none: the CPU).
+    pub hardware_decoder: Option<String>,
     pub problem: Option<Problem>,
 }
 
@@ -128,6 +130,7 @@ impl From<player::PlayerState> for PlayerState {
             video_width: state.video_size.map(|size| size.0),
             video_height: state.video_size.map(|size| size.1),
             video_shown: state.video_shown,
+            hardware_decoder: state.hardware_decoder,
             problem: state.problem.map(Problem::from),
         }
     }

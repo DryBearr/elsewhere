@@ -250,7 +250,7 @@ fn c(text: &str) -> CString {
 }
 
 /// Which property an observation reports (the reply_userdata of mpv_observe_property).
-pub(super) const OBSERVED: [(&str, c_int); 7] = [
+pub(super) const OBSERVED: [(&str, c_int); 8] = [
     ("time-pos", FORMAT_DOUBLE),
     ("duration", FORMAT_DOUBLE),
     ("pause", FORMAT_FLAG),
@@ -259,6 +259,8 @@ pub(super) const OBSERVED: [(&str, c_int); 7] = [
     ("volume", FORMAT_DOUBLE),
     // The video output has a picture to show (video on, a video playing).
     ("vo-configured", FORMAT_FLAG),
+    // Which hardware decoder decodes the video ("no": software).
+    ("hwdec-current", FORMAT_STRING),
 ];
 
 /// What `wait` got: a machine event, or something for the event loop itself.
@@ -501,6 +503,12 @@ unsafe fn property_event(id: u64, property: &RawProperty) -> Waited {
         (property.format == FORMAT_FLAG && !property.data.is_null())
             .then(|| unsafe { *property.data.cast::<c_int>() } != 0)
     };
+    // STRING data is a pointer to a C string (mpv frees it).
+    let string = || {
+        (property.format == FORMAT_STRING && !property.data.is_null())
+            .then(|| unsafe { text(*property.data.cast::<*const c_char>()) })
+            .flatten()
+    };
     let event = match id {
         0 => Event::Position(double()),
         1 => Event::Duration(double()),
@@ -518,6 +526,7 @@ unsafe fn property_event(id: u64, property: &RawProperty) -> Waited {
             None => return Waited::Nothing,
         },
         6 => Event::VideoShown(flag().unwrap_or(false)),
+        7 => Event::HardwareDecoder(string().filter(|name| !name.is_empty() && name != "no")),
         _ => return Waited::Nothing,
     };
     Waited::Event(event)

@@ -257,3 +257,128 @@ fn attaching_and_detaching_again_and_again_while_drawing() {
     assert_eq!(end.status, Status::Ended, "{end:?}");
     assert!(end.problem.is_none());
 }
+
+/// The hardware decoder each platform must use for H.264 (none: the CPU is fine).
+fn expected_decoder() -> Option<&'static str> {
+    if cfg!(target_os = "ios") {
+        Some("videotoolbox")
+    } else if cfg!(target_os = "android") {
+        Some("mediacodec")
+    } else {
+        None
+    }
+}
+
+#[test]
+fn video_is_decoded_in_hardware_where_the_phone_can() {
+    let player = new_player();
+    let video = player.video();
+    let frames = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&frames);
+    video
+        .attach_frames(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+    player.set_speed(0.5).unwrap();
+    player.open(&media("clip.mp4"), 0, true).unwrap();
+    until("frames", || frames.load(Ordering::SeqCst) > 3);
+    let mut frame = Frame::new(96, 64);
+    assert!(frame.draw(&video).unwrap());
+    assert!(frame.has_picture());
+    let state = player.state();
+    match expected_decoder() {
+        Some(wanted) => assert!(
+            state
+                .hardware_decoder
+                .as_deref()
+                .is_some_and(|name| name.starts_with(wanted)),
+            "decoded by {:?}, wanted {wanted}",
+            state.hardware_decoder
+        ),
+        // Desktops and CI machines: whatever they have, or the CPU.
+        None => println!("decoded by {:?}", state.hardware_decoder),
+    }
+    // Seeking while the hardware decodes, then to the end.
+    player.seek(1500).unwrap();
+    let end = wait(&player, "the end", |state| {
+        matches!(state.status, Status::Ended | Status::Failed)
+    });
+    assert_eq!(end.status, Status::Ended, "{end:?}");
+    assert!(frame.draw(&video).unwrap());
+}
+
+#[test]
+fn a_codec_the_hardware_lacks_falls_back_to_the_cpu() {
+    // VP9 (clip.webm): some phones decode it in hardware, others not; either way it plays.
+    let player = new_player();
+    let video = player.video();
+    let frames = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&frames);
+    video
+        .attach_frames(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+    player.open(&media("clip.webm"), 0, true).unwrap();
+    until("frames", || frames.load(Ordering::SeqCst) > 3);
+    let mut frame = Frame::new(96, 64);
+    assert!(frame.draw(&video).unwrap());
+    assert!(
+        frame.has_picture(),
+        "decoded by {:?}",
+        player.state().hardware_decoder
+    );
+    let end = wait(&player, "the end", |state| {
+        matches!(state.status, Status::Ended | Status::Failed)
+    });
+    assert_eq!(end.status, Status::Ended, "{end:?}");
+}
+
+#[test]
+fn hardware_decoded_players_come_and_go_quickly() {
+    // Android's MediaCodec once crashed when a player was dropped while it started up:
+    // players are made, given a video, and dropped at every moment of starting.
+    for round in 0..40u64 {
+        let player = new_player();
+        let video = player.video();
+        video.attach_frames(|| {}).unwrap();
+        player.open(&media("clip.mp4"), 0, true).unwrap();
+        thread::sleep(Duration::from_millis(round % 8 * 15));
+        if round % 3 == 0 {
+            // Off and on again while it decodes.
+            video.detach().unwrap();
+            video.attach_frames(|| {}).unwrap();
+        }
+        if round % 5 == 0 {
+            let _ = player.seek(800);
+        }
+        drop(player);
+    }
+    // The engine still works afterwards.
+    let player = new_player();
+    let video = player.video();
+    video.attach_frames(|| {}).unwrap();
+    player.set_speed(4.0).unwrap();
+    player.open(&media("clip.mp4"), 0, true).unwrap();
+    let end = wait(&player, "the end", |state| {
+        matches!(state.status, Status::Ended | Status::Failed)
+    });
+    assert_eq!(end.status, Status::Ended, "{end:?}");
+}
+
+#[test]
+fn audio_alone_needs_no_hardware_decoder() {
+    let player = new_player();
+    // No screen: the video plays its sound only, and nothing decodes the picture.
+    player.set_speed(4.0).unwrap();
+    player.open(&media("clip.mp4"), 0, true).unwrap();
+    let end = wait(&player, "the end", |state| {
+        matches!(state.status, Status::Ended | Status::Failed)
+    });
+    assert_eq!(
+        (end.status, end.hardware_decoder.clone()),
+        (Status::Ended, None),
+        "{end:?}"
+    );
+}
