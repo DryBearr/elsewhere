@@ -188,6 +188,12 @@ private struct SongRow: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("song-\(index)")
+        .contextMenu {
+            if !item.missing {
+                Button("Play next") { playback.addNext(itemId: item.id) }
+                Button("Add to queue") { playback.add(itemId: item.id) }
+            }
+        }
         .disabled(item.missing)
         .opacity(item.missing ? 0.4 : 1)
     }

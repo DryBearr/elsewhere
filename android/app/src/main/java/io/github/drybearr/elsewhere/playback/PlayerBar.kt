@@ -1,5 +1,6 @@
 package io.github.drybearr.elsewhere.playback
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -27,10 +28,11 @@ import uniffi.elsewhere.PlayerStatus
 
 /**
  * The small player above the tabs while something is queued: what plays, its progress,
- * previous, play/pause, next and stop. Plugged in by one line in MainActivity.
+ * previous, play/pause, next and stop; tap it to open the player. Plugged in by one line
+ * in MainActivity.
  */
 @Composable
-fun PlayerBar() {
+fun PlayerBar(onOpen: () -> Unit) {
     val state by Playback.state.collectAsState()
     val message by Playback.message.collectAsState()
     val queue = state
@@ -64,7 +66,13 @@ fun PlayerBar() {
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f).padding(start = 16.dp, top = 6.dp, bottom = 6.dp)) {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .clickable(onClickLabel = "Open player", onClick = onOpen)
+                        .padding(start = 16.dp, top = 6.dp, bottom = 6.dp)
+                        .testTag("open-player"),
+                ) {
                     Text(
                         now?.title ?: "Opening…",
                         maxLines = 1,

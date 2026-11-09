@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.drawable.Icon
 import android.media.MediaMetadata
 import android.media.session.MediaSession
@@ -20,7 +19,6 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import kotlin.math.abs
-import kotlin.math.max
 import uniffi.elsewhere.PlayerStatus
 import uniffi.elsewhere.QueueState
 
@@ -304,7 +302,7 @@ class PlaybackService : Service() {
         cover = null
         if (path == null) return
         Thread({
-            val loaded = load(path)
+            val loaded = Covers.load(path, COVER)
             main.post {
                 if (coverPath == path && loaded != null) {
                     cover = loaded
@@ -312,30 +310,5 @@ class PlaybackService : Service() {
                 }
             }
         }, "elsewhere-cover").start()
-    }
-
-    /** The image scaled down to COVER pixels at most, or null if it does not load. */
-    private fun load(path: String): Bitmap? = try {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(path, bounds)
-        var sample = 1
-        while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= COVER) sample *= 2
-        val image = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
-        if (image == null) {
-            null
-        } else {
-            val scale = COVER.toFloat() / max(image.width, image.height)
-            if (scale >= 1f) {
-                image
-            } else {
-                Bitmap.createScaledBitmap(
-                    image, max(1, (image.width * scale).toInt()), max(1, (image.height * scale).toInt()), true,
-                )
-            }
-        }
-    } catch (e: Throwable) {
-        // A broken or huge image: no cover rather than a crash.
-        Log.w(TAG, "cover did not load: $e")
-        null
     }
 }

@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import uniffi.elsewhere.CoreQueue
+import uniffi.elsewhere.QueueEntries
 import uniffi.elsewhere.QueueListener
 import uniffi.elsewhere.QueueState
 import uniffi.elsewhere.RepeatMode
@@ -67,6 +68,13 @@ object Playback {
     /** The saved playlist the queue was made from, if it was. */
     val source: StateFlow<Long?> = playing.asStateFlow()
 
+    private val listed = MutableStateFlow<QueueEntries?>(null)
+
+    /** The queue's entries, while a screen wants them ([wantEntries]); else possibly old. */
+    val entries: StateFlow<QueueEntries?> = listed.asStateFlow()
+    private var entryScreens = 0
+    private var fetching: Long? = null
+
     /** Commands that start playback and have not answered yet. */
     private var starting = 0
 
@@ -112,6 +120,58 @@ object Playback {
     }
 
     fun next(done: () -> Unit = {}) = command("next", done) { it.next() }
+
+    /** Plays the entry with this key (from a queue screen). */
+    fun jump(key: Long, done: () -> Unit = {}) = play("jump", done) {
+        it.jump(key)
+        it.resume()
+    }
+
+    fun remove(key: Long, done: () -> Unit = {}) = command("remove", done) { it.remove(key) }
+
+    fun moveEntry(key: Long, to: Int, done: () -> Unit = {}) =
+        command("move", done) { it.moveEntry(key, to.coerceAtLeast(0).toUInt()) }
+
+    fun playNext(key: Long, done: () -> Unit = {}) = command("play next", done) { it.playNext(key) }
+
+    /** Adds an item (a song from a playlist) at the end; to an empty queue, it plays. */
+    fun add(itemId: Long, done: () -> Unit = {}) = play("add", done) { it.add(listOf(itemId)) }
+
+    /** Adds an item right after what plays; to an empty queue, it plays. */
+    fun addNext(itemId: Long, done: () -> Unit = {}) = play("play next", done) {
+        it.add(listOf(itemId))
+        // A new entry goes at the end of the list (also when shuffled).
+        it.entries().entries.lastOrNull()?.let { entry -> it.playNext(entry.key) }
+    }
+
+    /**
+     * A screen showing the queue's entries calls this with true while it shows (and false
+     * after): only then are thousands of entries read again on every change.
+     */
+    fun wantEntries(on: Boolean) {
+        entryScreens = (entryScreens + if (on) 1 else -1).coerceAtLeast(0)
+        fetchEntries()
+    }
+
+    private fun fetchEntries() {
+        val revision = shown.value?.entriesRevision ?: return
+        if (entryScreens == 0 || listed.value?.revision == revision || fetching == revision) return
+        fetching = revision
+        commands.execute {
+            val got = try {
+                queue().entries()
+            } catch (e: Exception) {
+                Log.w(TAG, "entries failed: ${describe(e)}")
+                null
+            }
+            main.post {
+                fetching = null
+                if (got != null && got.revision >= (listed.value?.revision ?: 0)) listed.value = got
+                // Changed again meanwhile: once more.
+                fetchEntries()
+            }
+        }
+    }
 
     /** Starts the entry over; within its first 3 s, goes to the one before. */
     fun previous(done: () -> Unit = {}) = command("previous", done) { it.previous() }
@@ -228,6 +288,7 @@ object Playback {
     }
 
     private fun changed() {
+        fetchEntries()
         listenForNoise(keepsGoing)
         watchers.forEach { it() }
         shown.value?.let { SelfTest.onQueue(it) }

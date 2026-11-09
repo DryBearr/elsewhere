@@ -1,5 +1,6 @@
 package io.github.drybearr.elsewhere
 
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.assertIsEnabled
@@ -13,6 +14,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.drybearr.elsewhere.playback.Playback
@@ -29,6 +31,7 @@ import uniffi.elsewhere.MediaFormat
 import uniffi.elsewhere.PlayerStatus
 import uniffi.elsewhere.PlaylistOptions
 import uniffi.elsewhere.QueueState
+import uniffi.elsewhere.RepeatMode
 import uniffi.elsewhere.categories
 import uniffi.elsewhere.collectionItems
 import uniffi.elsewhere.collections
@@ -129,6 +132,78 @@ class MusicTest {
     }
 
     @Test
+    fun thePlayerScreenControlsPlaybackAndTheQueue() {
+        save()
+        openPlaylist()
+        ui.onNode(hasText("Play") and hasClickAction()).performClick()
+        waitFor("long playing") { it.nowPlaying?.title == "long" && it.playback.status == PlayerStatus.PLAYING }
+
+        // Open it from the bar, close it, open it again.
+        ui.onNodeWithTag("open-player").performClick()
+        ui.waitUntil(10_000) { tagText("player-title") == "long" }
+        ui.onNodeWithContentDescription("Close player").performClick()
+        ui.waitUntil(10_000) { ui.onAllNodes(hasTestTag("open-player")).fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithTag("open-player").performClick()
+        ui.waitUntil(10_000) { tagText("player-title") == "long" }
+
+        // Repeat goes round off, all, one; shuffle on and off; speed from the menu.
+        ui.onNodeWithTag("repeat").performClick()
+        waitFor("repeat all") { it.repeat == RepeatMode.ALL }
+        ui.onNodeWithContentDescription("Repeat all").assertExists()
+        ui.onNodeWithTag("repeat").performClick()
+        waitFor("repeat one") { it.repeat == RepeatMode.ONE }
+        ui.onNodeWithTag("repeat").performClick()
+        waitFor("repeat off") { it.repeat == RepeatMode.OFF }
+        ui.onNodeWithTag("shuffle").performClick()
+        waitFor("shuffled") { it.shuffle }
+        ui.onNodeWithTag("shuffle").performClick()
+        waitFor("not shuffled") { !it.shuffle }
+        ui.onNodeWithTag("speed").performClick()
+        ui.onNodeWithText("2x").performClick()
+        waitFor("speed 2") { it.playback.speed == 2.0 }
+        ui.onNodeWithTag("speed").performClick()
+        ui.onNodeWithText("1x").performClick()
+        waitFor("speed 1") { it.playback.speed == 1.0 }
+
+        // Paused, the slider goes to 3 s and the player follows.
+        ui.onNodeWithContentDescription("Pause").performClick()
+        waitFor("paused") { it.playback.status == PlayerStatus.PAUSED }
+        waitFor("a length") { (it.playback.durationMs ?: 0) > 0 }
+        ui.onNodeWithTag("player-position").performSemanticsAction(SemanticsActions.SetProgress) { it(3000f) }
+        waitFor("at 3 s") { it.playback.positionMs in 2500..3600 }
+        ui.waitUntil(10_000) { tagText("player-elapsed") in setOf("0:02", "0:03") }
+
+        // The queue: rows with their titles; tap one to play it.
+        ui.waitUntil(15_000) { rowTitle("queue-1") == "song" }
+        ui.onNodeWithTag("queue-1").performClick()
+        waitFor("song from the queue") { it.nowPlaying?.title == "song" && it.wantsPlay }
+        ui.onNodeWithContentDescription("Pause").performClick()
+        waitFor("paused on song") { !it.wantsPlay }
+        // Play next brings long after song; remove takes it out again.
+        ui.onNodeWithTag("queue-menu-0").performClick()
+        ui.onNodeWithText("Play next").performClick()
+        waitFor("long next") { it.hasNext && it.current == 0u }
+        ui.waitUntil(15_000) { rowTitle("queue-1") == "long" }
+        ui.onNodeWithTag("queue-menu-1").performClick()
+        ui.onNodeWithText("Remove").performClick()
+        waitFor("one left") { it.entryCount == 1u && !it.hasNext }
+        // Removing the last one empties the queue: the player closes itself.
+        ui.onNodeWithTag("queue-menu-0").performClick()
+        ui.onNodeWithText("Remove").performClick()
+        waitFor("empty") { it.entryCount == 0u }
+        ui.waitUntil(10_000) { ui.onAllNodes(hasTestTag("player-title")).fetchSemanticsNodes().isEmpty() }
+
+        // From a playlist: add to an empty queue plays; play next comes after it.
+        ui.onNodeWithTag("song-menu-1").performClick()
+        ui.onNodeWithText("Add to queue").performClick()
+        waitFor("song added and playing") { it.entryCount == 1u && it.nowPlaying?.title == "song" && it.wantsPlay }
+        ui.onNodeWithTag("song-menu-0").performClick()
+        ui.onNodeWithText("Play next").performClick()
+        waitFor("long after song") { it.entryCount == 2u && it.hasNext }
+        waitFor("long plays next", 15_000) { it.nowPlaying?.title == "long" }
+    }
+
+    @Test
     fun theMusicTabSaysWhenThereIsNothing() {
         // Whatever is saved, the tab opens; an empty Music tab says how to fill it.
         ui.onNode(hasText("Music") and hasClickAction()).performClick()
@@ -170,6 +245,16 @@ class MusicTest {
         ui.onAllNodes(hasTestTag(tag), useUnmergedTree = true).fetchSemanticsNodes().firstOrNull()
             ?.config?.getOrNull(SemanticsProperties.Text)
             ?.joinToString("") { it.text }
+
+    /** The first text inside the node with this tag (a row's title). */
+    private fun rowTitle(tag: String): String? =
+        ui.onAllNodes(hasTestTag(tag), useUnmergedTree = true).fetchSemanticsNodes().firstOrNull()
+            ?.children?.firstNotNullOfOrNull { child ->
+                child.config.getOrNull(SemanticsProperties.Text)?.joinToString("") { it.text }
+                    ?: child.children.firstNotNullOfOrNull { inner ->
+                        inner.config.getOrNull(SemanticsProperties.Text)?.joinToString("") { it.text }
+                    }
+            }
 
     /** Waits for the queue's state to hold. */
     private fun waitFor(what: String, timeout: Long = 15_000, check: (QueueState) -> Boolean) {

@@ -26,6 +26,12 @@ final class Playback: ObservableObject {
     @Published private(set) var message: String?
     /// The saved playlist the queue was made from, if it was.
     @Published private(set) var source: Int64?
+    /// The queue's entries, while a screen wants them (`wantEntries`); else possibly old.
+    @Published private(set) var entries: QueueEntries?
+    /// Whether the player screen shows (the player bar opens it).
+    @Published var playerOpen = false
+    private var entryScreens = 0
+    private var fetching: Int64?
 
     /// Commands that start playback and have not answered yet.
     private var starting = 0
@@ -92,6 +98,63 @@ final class Playback: ObservableObject {
 
     func next(done: @escaping () -> Void = {}) {
         command("next", done) { try $0.next() }
+    }
+
+    /// Plays the entry with this key (from the queue on the player screen).
+    func jump(key: Int64, done: @escaping () -> Void = {}) {
+        startPlaying("jump", done) {
+            try $0.jump(entryKey: key)
+            try $0.resume()
+        }
+    }
+
+    func remove(key: Int64, done: @escaping () -> Void = {}) {
+        command("remove", done) { try $0.remove(entryKey: key) }
+    }
+
+    func moveEntry(key: Int64, to: Int, done: @escaping () -> Void = {}) {
+        command("move", done) { try $0.moveEntry(entryKey: key, to: UInt32(max(0, to))) }
+    }
+
+    func playNext(key: Int64, done: @escaping () -> Void = {}) {
+        command("play next", done) { try $0.playNext(entryKey: key) }
+    }
+
+    /// Adds an item (a song from a playlist) at the end; to an empty queue, it plays.
+    func add(itemId: Int64, done: @escaping () -> Void = {}) {
+        startPlaying("add", done) { try $0.add(items: [itemId]) }
+    }
+
+    /// Adds an item right after what plays; to an empty queue, it plays.
+    func addNext(itemId: Int64, done: @escaping () -> Void = {}) {
+        startPlaying("play next", done) {
+            try $0.add(items: [itemId])
+            // A new entry goes at the end of the list (also when shuffled).
+            if let entry = $0.entries().entries.last { try $0.playNext(entryKey: entry.key) }
+        }
+    }
+
+    /// A screen showing the queue's entries calls this with true while it shows (and false
+    /// after): only then are thousands of entries read again on every change.
+    func wantEntries(_ on: Bool) {
+        entryScreens = max(0, entryScreens + (on ? 1 : -1))
+        fetchEntries()
+    }
+
+    private func fetchEntries() {
+        guard let revision = state?.entriesRevision, entryScreens > 0,
+              entries?.revision != revision, fetching != revision
+        else { return }
+        fetching = revision
+        commands.async {
+            let got = try? self.made().entries()
+            DispatchQueue.main.async {
+                self.fetching = nil
+                if let got, got.revision >= (self.entries?.revision ?? 0) { self.entries = got }
+                // Changed again meanwhile: once more.
+                self.fetchEntries()
+            }
+        }
     }
 
     /// Starts the entry over; within its first 3 s, goes to the one before.
@@ -201,6 +264,7 @@ final class Playback: ObservableObject {
     }
 
     private func changed() {
+        fetchEntries()
         showRemote()
         showNowPlaying()
         if let state { SelfTest.onQueue(state) }
@@ -388,7 +452,7 @@ final class Playback: ObservableObject {
 
     // MARK: The cover
 
-    /// Covers are scaled to this many points at most.
+    /// Covers on the lock screen are scaled to this many pixels at most.
     private static let coverSize: CGFloat = 512
     private var coverPath: String?
     private var cover: UIImage?
@@ -400,7 +464,7 @@ final class Playback: ObservableObject {
         cover = nil
         guard let path else { return }
         DispatchQueue.global(qos: .utility).async {
-            let loaded = Playback.load(path)
+            let loaded = Playback.loadCover(path, size: Playback.coverSize)
             DispatchQueue.main.async {
                 guard self.coverPath == path, let loaded else { return }
                 self.cover = loaded
@@ -409,10 +473,11 @@ final class Playback: ObservableObject {
         }
     }
 
-    /// The image scaled down to coverSize at most, or nil if it does not load.
-    private static func load(_ path: String) -> UIImage? {
+    /// The image at `path` scaled down to `size` pixels at most, or nil if it does not load
+    /// (a cover can be a 4000-pixel photo).
+    static func loadCover(_ path: String, size: CGFloat) -> UIImage? {
         guard let image = UIImage(contentsOfFile: path), image.size.width > 0, image.size.height > 0 else { return nil }
-        let scale = min(1, coverSize / max(image.size.width, image.size.height))
+        let scale = min(1, size / max(image.size.width, image.size.height))
         if scale >= 1 { return image }
         let size = CGSize(width: max(1, (image.size.width * scale).rounded()), height: max(1, (image.size.height * scale).rounded()))
         let format = UIGraphicsImageRendererFormat.default()

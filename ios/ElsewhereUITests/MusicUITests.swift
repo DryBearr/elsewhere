@@ -76,6 +76,87 @@ final class MusicUITests: XCTestCase {
         wait(playlist, "exists == true")
     }
 
+    func testThePlayerScreenControlsPlaybackAndTheQueue() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-selftest", "music", "-server", server]
+        app.launch()
+        app.tabBars.buttons["Music"].tap()
+        let playlist = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Music Playlist'")).firstMatch
+        wait(playlist, "exists == true", timeout: 180)
+        playlist.tap()
+        wait(app.buttons["song-1"], "exists == true", timeout: 30)
+        app.buttons["play-all"].tap()
+        wait(app.staticTexts["now-title"], "label == 'long'")
+
+        // Open it from the bar, close it, open it again.
+        let title = app.staticTexts["player-title"]
+        app.staticTexts["now-title"].tap()
+        wait(title, "label == 'long'")
+        app.buttons["close-player"].tap()
+        wait(title, "exists == false")
+        app.staticTexts["now-title"].tap()
+        wait(title, "label == 'long'")
+
+        // Repeat goes round off, all, one; shuffle on and off; speed from the menu.
+        let repeatButton = app.buttons["repeat"]
+        repeatButton.tap()
+        wait(repeatButton, "label == 'Repeat all'")
+        repeatButton.tap()
+        wait(repeatButton, "label == 'Repeat one'")
+        repeatButton.tap()
+        wait(repeatButton, "label == 'Repeat off'")
+        app.buttons["shuffle"].tap()
+        wait(app.buttons["shuffle"], "label == 'Shuffle on'")
+        app.buttons["shuffle"].tap()
+        wait(app.buttons["shuffle"], "label == 'Shuffle off'")
+        app.buttons["speed"].tap()
+        app.buttons["2x"].tap()
+        wait(app.buttons["speed"], "label CONTAINS '2x'")
+        app.buttons["speed"].tap()
+        app.buttons["1x"].tap()
+        wait(app.buttons["speed"], "label CONTAINS '1x'")
+
+        // Paused, the slider goes to the middle (3 s of 6) and the player follows.
+        app.buttons["player-pause"].tap()
+        wait(app.buttons["player-play"], "exists == true")
+        let slider = app.sliders["player-position"]
+        wait(slider, "exists == true")
+        slider.adjust(toNormalizedSliderPosition: 0.5)
+        wait(app.staticTexts["player-elapsed"], "label == '0:02' OR label == '0:03'")
+
+        // The queue: rows with their titles; tap one to play it.
+        let first = app.buttons["queue-0"]
+        let second = app.buttons["queue-1"]
+        wait(second, "label BEGINSWITH 'song'", timeout: 30)
+        second.tap()
+        wait(title, "label == 'song'")
+        app.buttons["player-pause"].tap()
+        wait(app.buttons["player-play"], "exists == true")
+        // Play next brings long after song; a swipe removes it again.
+        first.press(forDuration: 1.2)
+        app.buttons["Play next"].tap()
+        wait(second, "label BEGINSWITH 'long'")
+        wait(app.buttons["player-next"], "isEnabled == true")
+        second.swipeLeft()
+        app.buttons["Delete"].tap()
+        wait(second, "exists == false")
+        // Removing the last one empties the queue: the player closes itself.
+        first.press(forDuration: 1.2)
+        app.buttons["Remove"].tap()
+        wait(title, "exists == false")
+        wait(app.staticTexts["now-title"], "exists == false")
+
+        // From a playlist: add to an empty queue plays; play next comes after it.
+        app.buttons["song-1"].press(forDuration: 1.2)
+        app.buttons["Add to queue"].tap()
+        wait(app.staticTexts["now-title"], "label == 'song'")
+        app.buttons["song-0"].press(forDuration: 1.2)
+        app.buttons["Play next"].tap()
+        wait(app.buttons["bar-next"], "isEnabled == true")
+        wait(app.staticTexts["now-title"], "label == 'long'", timeout: 15)
+        app.buttons["bar-stop"].tap()
+    }
+
     /// Waits for `predicate` to hold for `element`.
     private func wait(_ element: XCUIElement, _ predicate: String, timeout: TimeInterval = 15,
                       file: StaticString = #filePath, line: UInt = #line) {

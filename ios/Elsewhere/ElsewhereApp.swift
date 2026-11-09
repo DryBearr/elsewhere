@@ -35,6 +35,7 @@ struct ElsewhereApp: App {
                     .tabItem { Label("Library", systemImage: "books.vertical") }
                     .tag(Tab.library)
             }
+            .playerSheet()
         }
     }
 }

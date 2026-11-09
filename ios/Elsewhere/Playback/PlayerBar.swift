@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The small player above the tabs while something is queued: what plays, its progress,
-/// previous, play/pause, next and stop. Plugged in by `.playerBar()` on each tab in
-/// ElsewhereApp.
+/// previous, play/pause, next and stop; tap it to open the player. Plugged in by
+/// `.playerBar()` on each tab in ElsewhereApp.
 struct PlayerBar: View {
     @ObservedObject private var playback = Playback.shared
 
@@ -47,6 +47,12 @@ struct PlayerBar: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                // A tap opens the player; the texts stay readable on their own.
+                .onTapGesture { self.playback.playerOpen = true }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("open-player")
+                .accessibilityAction(named: "Open player") { self.playback.playerOpen = true }
                 Button { self.playback.previous() } label: {
                     Image(systemName: "backward.fill")
                 }
