@@ -309,9 +309,20 @@ impl CoreQueue {
         Ok(self.queue.video().detach()?)
     }
 
-    /// The engine's number for Android's VideoSurface (JNI) functions.
-    pub fn video_target(&self) -> i64 {
-        self.queue.video().target()
+    /// Video on, drawn into an Android Surface: `window` is the JNI global reference to it
+    /// that VideoSurface.window made (keep it until `detach_video` returned).
+    pub fn attach_surface(&self, window: i64) -> Result<(), ApiError> {
+        Ok(self.queue.video().attach_surface(window)?)
+    }
+
+    /// The Android Surface's new size (rotation, split screen).
+    pub fn resize_surface(&self, width: u32, height: u32) -> Result<(), ApiError> {
+        Ok(self.queue.video().surface_size(width, height)?)
+    }
+
+    /// What the engine says about its video, as one line (for the apps' tests).
+    pub fn describe_video(&self) -> String {
+        self.queue.video().describe()
     }
 
     /// The entries, in their list order (what a queue screen shows; the current one is at

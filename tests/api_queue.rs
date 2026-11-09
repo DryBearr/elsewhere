@@ -543,11 +543,21 @@ fn the_lock_screen_reads_now_playing_and_wants_play() {
 }
 
 #[test]
-fn each_queue_has_its_own_video_target_and_frames_need_their_output() {
+fn video_needs_the_platform_s_own_output() {
     let (first, _) = queue();
-    let (second, _) = queue();
-    let (a, b) = (first.video_target(), second.video_target());
-    assert!(a > 0 && b > 0 && a != b, "{a} {b}");
+    // Surfaces are Android's (these tests run elsewhere: desktop, simulator).
+    if !cfg!(target_os = "android") {
+        assert_eq!(kind_of(&first.attach_surface(1)), Some(ProblemKind::Bug));
+    }
+    assert_eq!(
+        kind_of(&first.resize_surface(0, 10)),
+        Some(ProblemKind::Input)
+    );
+    let described = first.describe_video();
+    assert!(
+        described.contains("vo-configured=no"),
+        "nothing shows: {described}"
+    );
     // The core's start turns on the frames output on iOS only (Android draws into a
     // Surface): elsewhere attaching frames is refused. Drawing before any frame came draws
     // nothing; detaching is fine.
@@ -577,5 +587,4 @@ fn each_queue_has_its_own_video_target_and_frames_need_their_output() {
         Some(ProblemKind::Input)
     );
     first.detach_video().unwrap();
-    drop(second);
 }

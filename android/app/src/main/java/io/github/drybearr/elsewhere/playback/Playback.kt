@@ -49,12 +49,8 @@ object Playback {
     private lateinit var app: Application
     private val main = Handler(Looper.getMainLooper())
 
-    private var queue: CoreQueue? = null
-
-    /** The engine's number for VideoSurface, once the queue is made (0 before). */
     @Volatile
-    var target = 0L
-        private set
+    private var queue: CoreQueue? = null
 
     /** The last video events, newest last (for the self-test and the UI tests' failures). */
     val videoEvents = java.util.concurrent.ConcurrentLinkedDeque<String>()
@@ -67,8 +63,9 @@ object Playback {
 
     /** A Surface waiting for the queue to be made (main thread). */
     private var waitingSurface: Surface? = null
-    /** The Surface mpv draws into now (the newest VideoView's). */
-    private var shownSurface: Surface? = null
+
+    /** The Surface mpv draws into now (the newest VideoView's), and mpv's reference to it. */
+    private var shownSurface: Pair<Surface, Long>? = null
 
     /** One thread, so commands reach the queue in the order they were made. */
     private val commands = Executors.newSingleThreadExecutor { Thread(it, "elsewhere-playback") }
@@ -292,7 +289,6 @@ object Playback {
             }
         })
         queue = made
-        target = made.videoTarget()
         // A video screen that came first gets its picture now.
         main.post { waitingSurface?.let { attachSurface(it) } }
     }
@@ -301,24 +297,39 @@ object Playback {
 
     /**
      * A Surface to show video on (main thread; VideoView). The newest one wins: going full
-     * screen makes a second view, whose Surface can come before the first one goes.
+     * screen makes a second view, whose Surface can come before the first one goes. Says
+     * how it went (for the UI tests).
      */
     fun attachSurface(surface: Surface): String {
-        val number = target
-        if (number == 0L) {
-            videoEvent("a video surface waits for the queue")
+        val made = queue
+        if (made == null) {
             waitingSurface = surface
             return "waiting for the queue"
         }
         waitingSurface = null
-        shownSurface = if (VideoSurface.attach(number, surface)) surface else null
-        val said = if (shownSurface == null) "not taken by $number" else "attached to $number"
-        videoEvent("video surface $said")
-        return said
+        val window = VideoSurface.window(surface)
+        if (window == 0L) return "no reference to the surface"
+        // One at a time: mpv lets go of the one before first.
+        shownSurface?.let { (_, old) ->
+            runCatching { made.detachVideo() }
+            VideoSurface.release(old)
+        }
+        shownSurface = null
+        return try {
+            made.attachSurface(window)
+            shownSurface = surface to window
+            "attached".also(::videoEvent)
+        } catch (e: Exception) {
+            VideoSurface.release(window)
+            "refused: ${describe(e)}".also(::videoEvent)
+        }
     }
 
     fun resizeSurface(surface: Surface, width: Int, height: Int) {
-        if (shownSurface === surface) VideoSurface.resize(target, width, height)
+        val made = queue ?: return
+        if (shownSurface?.first === surface && width > 0 && height > 0) {
+            runCatching { made.resizeSurface(width.toUInt(), height.toUInt()) }
+        }
     }
 
     /**
@@ -327,38 +338,16 @@ object Playback {
      */
     fun detachSurface(surface: Surface) {
         if (waitingSurface === surface) waitingSurface = null
-        if (shownSurface === surface) {
-            shownSurface = null
-            VideoSurface.detach(target)
-            videoEvent("video surface detached")
-        }
+        val (shown, window) = shownSurface ?: return
+        if (shown !== surface) return
+        shownSurface = null
+        runCatching { queue?.detachVideo() }
+        VideoSurface.release(window)
+        videoEvent("detached")
     }
 
-    private fun publish(state: QueueState) {
-        val old = shown.value
-        if (old != null && old.revision >= state.revision) return
-        shown.value = state
-        settle()
-        changed()
-    }
-
-    /**
-     * Done playing (the end, or nothing queued): the focus goes back to other apps. Not
-     * while a play is on its way: the queue's first state is empty, and comes after the focus.
-     */
-    private fun settle() {
-        val state = shown.value ?: return
-        if (starting == 0 && !resumeAfterLoss && !state.wantsPlay && (state.finished || (state.entryCount == 0u))) {
-            abandonFocus()
-        }
-    }
-
-    private fun changed() {
-        fetchEntries()
-        listenForNoise(keepsGoing)
-        watchers.forEach { it() }
-        shown.value?.let { SelfTest.onQueue(it) }
-    }
+    /** What the engine says about its video, as one line (for the UI tests). */
+    fun describeVideo(): String = queue?.describeVideo() ?: "no queue"
 
     // --- Audio focus -------------------------------------------------------------------------
 

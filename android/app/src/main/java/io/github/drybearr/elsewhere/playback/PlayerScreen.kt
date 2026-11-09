@@ -280,7 +280,7 @@ private fun VideoSurfaceView(playing: Boolean, modifier: Modifier) {
     var core by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
         while (true) {
-            core = if (Playback.target == 0L) "no queue" else VideoSurface.describe(Playback.target)
+            core = Playback.describeVideo()
             delay(1000)
         }
     }

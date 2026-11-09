@@ -7,8 +7,8 @@
 //! - frames (iOS, and the tests): mpv draws each frame into memory the app hands it
 //!   (`draw`), told by a callback when a new one is ready. Needs `set_frames_output(true)`
 //!   before the player is made (the core's start does it on iOS).
-//! - a surface (Android): mpv draws into the app's Surface itself (`attach_surface`, from
-//!   the JNI functions in android.rs).
+//! - a surface (Android): mpv draws into the app's Surface itself (`attach_surface`, with
+//!   a JNI global reference to it from android.rs).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -82,11 +82,6 @@ impl Video {
         self.inner.upgrade().ok_or_else(gone)
     }
 
-    /// The number the Android app passes to the JNI functions for this player.
-    pub fn target(&self) -> i64 {
-        self.inner.upgrade().map_or(0, |inner| inner.id as i64)
-    }
-
     /// Video on, drawn as frames: `on_frame` is called (on one of mpv's threads; hand it
     /// over and return) whenever a new frame is ready for `draw`. Replaces an earlier one.
     pub fn attach_frames(
@@ -158,9 +153,9 @@ impl Video {
     /// reference to it, valid until `detach` returns.
     pub fn attach_surface(&self, window: i64) -> Result<(), Problem> {
         let inner = self.inner()?;
-        if frames_output() {
+        if frames_output() || !cfg!(target_os = "android") {
             return Err(Problem::bug(
-                "this player draws video as frames, not into a surface",
+                "only Android players draw video into a surface",
             ));
         }
         if window == 0 {
@@ -247,24 +242,4 @@ impl Video {
         }
         off
     }
-}
-
-/// Players by their number, for the Android JNI functions (which get only a number).
-static TARGETS: Mutex<Vec<(u64, Weak<Inner>)>> = Mutex::new(Vec::new());
-
-pub(super) fn register(inner: &Arc<Inner>) {
-    let mut targets = lock(&TARGETS);
-    targets.retain(|(_, player)| player.strong_count() > 0);
-    targets.push((inner.id, Arc::downgrade(inner)));
-}
-
-/// The video of the player with this number, while it lives.
-pub fn by_target(target: i64) -> Option<Video> {
-    let targets = lock(&TARGETS);
-    targets
-        .iter()
-        .find(|(id, player)| *id as i64 == target && player.strong_count() > 0)
-        .map(|(_, player)| Video {
-            inner: player.clone(),
-        })
 }

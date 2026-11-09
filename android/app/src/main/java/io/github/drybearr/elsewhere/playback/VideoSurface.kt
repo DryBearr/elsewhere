@@ -6,29 +6,23 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 
 /**
- * The core's JNI functions for video (src/player/android.rs): mpv draws a video into a
- * Surface itself. Loading the library this way (it is loaded already, through JNA) also
- * gives the core the Java VM, which mpv needs to reach the Surface.
+ * The core's two JNI functions for video (src/player/android.rs): a Surface becomes a JNI
+ * global reference, which mpv draws into (CoreQueue.attachSurface), and is let go after.
+ * Loading the library this way also gives the core the Java VM, which mpv needs to reach
+ * the Surface.
  */
 object VideoSurface {
     init {
         System.loadLibrary("elsewhere")
     }
 
-    /** Video on, drawn into `surface`, for the player numbered `target`. */
+    /** A reference to `surface` for mpv; 0 if none could be made. */
     @JvmStatic
-    external fun attach(target: Long, surface: Surface): Boolean
+    external fun window(surface: Surface): Long
 
-    /** Video off; when it returns, the Surface is free again. */
+    /** Lets go of a reference from [window], once mpv no longer draws into it. */
     @JvmStatic
-    external fun detach(target: Long)
-
-    @JvmStatic
-    external fun resize(target: Long, width: Int, height: Int)
-
-    /** What the core and mpv say about video, as one line (for tests). */
-    @JvmStatic
-    external fun describe(target: Long): String
+    external fun release(window: Long)
 }
 
 /**

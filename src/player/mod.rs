@@ -22,7 +22,7 @@ mod machine;
 mod mpv;
 mod video;
 
-pub use video::{Video, by_target, set_frames_output};
+pub use video::{Video, set_frames_output};
 
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -250,8 +250,6 @@ fn configure(mpv: &Handle) -> Result<(), Problem> {
 
 struct Inner {
     name: String,
-    /// Its number (for Android's JNI functions, which find the player by it).
-    id: u64,
     /// Before `mpv`: the video renderer must be freed before the handle.
     video: Mutex<video::Slot>,
     mpv: Handle,
@@ -288,7 +286,6 @@ impl Player {
         let id = PLAYERS.fetch_add(1, Ordering::SeqCst) as u64;
         let inner = Arc::new(Inner {
             name: format!("player-{id}"),
-            id,
             video: Mutex::new(video::Slot::default()),
             mpv,
             machine: Mutex::new(Machine::new()),
@@ -296,7 +293,6 @@ impl Player {
             closing: AtomicBool::new(false),
             logged: AtomicUsize::new(0),
         });
-        video::register(&inner);
         let events = Arc::clone(&inner);
         health::supervise(inner.name.clone(), move || events.run())
             .map_err(|err| Problem::bug(format!("could not start the player thread: {err}")))?;
