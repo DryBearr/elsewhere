@@ -277,82 +277,89 @@ class MusicTest {
 
         // A new playlist.
         ui.onNodeWithTag("new-playlist").performClick()
+        ui.waitForIdle()
         ui.onNodeWithTag("name-field").performTextInput("  Mine ")
+        ui.waitForIdle()
         ui.onNodeWithTag("name-ok").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("Mine") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 1") { ui.onAllNodes(hasText("Mine") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
 
         // Songs, A to Z; both into it, song first.
         ui.onNodeWithTag("view-Songs").performClick()
-        ui.waitUntil(10_000) { rowTitle("item-1") != null }
+        waitScreen("step 2") { rowTitle("item-1") != null }
         // A to Z (other tests may have saved more copies of these songs).
         val titles = (0..10).mapNotNull { rowTitle("item-$it") }
         assertEquals(titles.sorted(), titles)
         for (title in listOf("song", "long")) {
             menu("item-menu-${titles.indexOf(title)}", "Add to playlist…")
-            ui.waitUntil(10_000) { ui.onAllNodes(hasText("Mine") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
+            waitScreen("step 3") { ui.onAllNodes(hasText("Mine") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
+            ui.waitForIdle()
             ui.onNode(hasText("Mine") and hasClickAction()).performClick()
             ui.waitForIdle()
         }
         ui.onNodeWithTag("order-ADDED").performClick()
-        ui.waitUntil(10_000) { rowTitle("item-1") != null }
+        waitScreen("step 4") { rowTitle("item-1") != null }
 
         // In it: move, take out.
         ui.onNodeWithTag("view-Playlists").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("Mine") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 5") { ui.onAllNodes(hasText("Mine") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
         ui.onNode(hasText("Mine") and hasClickAction()).performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("2 songs")).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 6") { ui.onAllNodes(hasText("2 songs")).fetchSemanticsNodes().isNotEmpty() }
         assertEquals(listOf("song", "long"), listOf(rowTitle("song-0"), rowTitle("song-1")))
         menu("song-menu-1", "Move up")
-        ui.waitUntil(10_000) { rowTitle("song-0") == "long" }
+        waitScreen("long moved up") { rowTitle("song-0") == "long" }
         menu("song-menu-0", "Remove from playlist")
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("1 song")).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 7") { ui.onAllNodes(hasText("1 song")).fetchSemanticsNodes().isNotEmpty() }
         assertEquals("song", rowTitle("song-0"))
         ui.onNodeWithContentDescription("Back").performClick()
 
         // Rename, copy, delete the copy.
         val mine = ownRow("Mine")
         menu("playlist-menu-$mine", "Rename")
+        ui.waitForIdle()
         ui.onNodeWithTag("name-field").performTextReplacement("Ours")
+        ui.waitForIdle()
         ui.onNodeWithTag("name-ok").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("Ours") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 8") { ui.onAllNodes(hasText("Ours") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
         menu("playlist-menu-${ownRow("Ours")}", "Copy")
+        ui.waitForIdle()
         ui.onNodeWithTag("name-ok").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("Ours (copy)") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 9") { ui.onAllNodes(hasText("Ours (copy)") and hasClickAction()).fetchSemanticsNodes().isNotEmpty() }
         menu("playlist-menu-${ownRow("Ours (copy)")}", "Delete", opensDialog = true)
+        ui.waitForIdle()
         ui.onNodeWithTag("confirm").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("Ours (copy)")).fetchSemanticsNodes().isEmpty() }
+        waitScreen("step 10") { ui.onAllNodes(hasText("Ours (copy)")).fetchSemanticsNodes().isEmpty() }
 
         // A saved playlist is not changed by hand.
         ui.onNode(hasText("Music Playlist") and hasClickAction()).performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasTestTag("song-menu-0")).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 11") { ui.onAllNodes(hasTestTag("song-menu-0")).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithText("Saved from a link: saving it again updates it. Copy it to change it.").assertExists()
         ui.onNodeWithTag("song-menu-0").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("Play next")).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 12") { ui.onAllNodes(hasText("Play next")).fetchSemanticsNodes().isNotEmpty() }
         assertTrue(ui.onAllNodes(hasText("Remove from playlist")).fetchSemanticsNodes().isEmpty())
         // Closing the menu by picking from it.
         ui.onNodeWithText("Play next").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("Play next")).fetchSemanticsNodes().isEmpty() }
+        waitScreen("step 13") { ui.onAllNodes(hasText("Play next")).fetchSemanticsNodes().isEmpty() }
         ui.onNodeWithContentDescription("Back").performClick()
 
         // Search: songs (any case) and playlists; a song found plays.
         ui.onNodeWithTag("search").performTextInput("SONG")
-        ui.waitUntil(10_000) { rowTitle("found-0") == "song" }
+        waitScreen("step 14") { rowTitle("found-0") == "song" }
         ui.onNodeWithTag("found-0").performClick()
         waitFor("the found song playing") { it.nowPlaying?.title == "song" && it.wantsPlay }
         ui.onNodeWithTag("search").performTextReplacement("ours")
-        ui.waitUntil(10_000) { ui.onAllNodes(hasTestTag("found-playlist-0")).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 15") { ui.onAllNodes(hasTestTag("found-playlist-0")).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("found-playlist-0").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("1 song")).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 16") { ui.onAllNodes(hasText("1 song")).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithContentDescription("Back").performClick()
         ui.onNodeWithTag("search").performTextReplacement("nothing like this")
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("Nothing found.")).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 17") { ui.onAllNodes(hasText("Nothing found.")).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithContentDescription("Clear search").performClick()
 
         // The test songs name no artist or album.
         ui.onNodeWithTag("view-Artists").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("No artists yet.")).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 18") { ui.onAllNodes(hasText("No artists yet.")).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("view-Albums").performClick()
-        ui.waitUntil(10_000) { ui.onAllNodes(hasText("No albums yet.")).fetchSemanticsNodes().isNotEmpty() }
+        waitScreen("step 19") { ui.onAllNodes(hasText("No albums yet.")).fetchSemanticsNodes().isNotEmpty() }
 
         // Clean up for the next run.
         collections(saved.categoryId).filter { it.source == null }.forEach { deletePlaylist(it.id) }
@@ -442,10 +449,26 @@ class MusicTest {
         if (tag.startsWith("queue-")) ui.onNodeWithTag("player-list").performScrollToNode(hasTestTag(tag))
         ui.onNodeWithTag(tag).performClick()
         ui.waitUntil(10_000) { ui.onAllNodes(hasText(item)).fetchSemanticsNodes().isNotEmpty() }
+        // A tap while the menu still opens can land outside it and only close it.
+        ui.waitForIdle()
         ui.onNodeWithText(item).performClick()
         // A dialog that follows can say the same word (Delete): then only wait for it.
         if (!opensDialog) ui.waitUntil(10_000) { ui.onAllNodes(hasText(item)).fetchSemanticsNodes().isEmpty() }
         ui.waitForIdle()
+    }
+
+    /** Waits for `check`; if it never holds, says what the screen shows. */
+    private fun waitScreen(what: String, check: () -> Boolean) {
+        try {
+            ui.waitUntil(10_000, check)
+        } catch (e: androidx.compose.ui.test.ComposeTimeoutException) {
+            val playlists = runCatching {
+                categories().filter { it.name == "Music" }.flatMap { collections(it.id) }.map { playlist ->
+                    "${playlist.name}: " + collectionItems(playlist.id, null, 20u).entries.joinToString { it.item.title }
+                }
+            }.getOrElse { listOf("($it)") }
+            throw AssertionError("never $what; playlists $playlists; core log:\n${coreLog()}\nscreen:\n${screen()}", e)
+        }
     }
 
     /** What the screen shows (its semantics tree), for failures. */

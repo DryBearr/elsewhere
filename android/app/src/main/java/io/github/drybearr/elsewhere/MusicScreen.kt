@@ -436,9 +436,22 @@ private fun Playlist(context: Edits, id: Long, onBack: () -> Unit) {
                                     if (index < rows.lastIndex || !complete) {
                                         DropdownMenuItem(text = { Text("Move down") }, onClick = {
                                             menu = false
-                                            // Before the one after the next (none: to the end).
-                                            val before = rows.getOrNull(index + 2)?.entryId
-                                            edit { moveInPlaylist(id, row.entryId, before) }
+                                            // Before the one after the next (none: to the end). Past
+                                            // the rows loaded so far, that one is asked for first.
+                                            val place = index + 2
+                                            val shown = rows.map { it.entryId }
+                                            val after = if (complete) null else next
+                                            edit {
+                                                val before = when {
+                                                    place < shown.size -> shown[place]
+                                                    after == null -> null
+                                                    else -> {
+                                                        val ahead = place - shown.size
+                                                        collectionItems(id, after, (ahead + 1).toUInt()).entries.getOrNull(ahead)?.entryId
+                                                    }
+                                                }
+                                                moveInPlaylist(id, row.entryId, before)
+                                            }
                                         })
                                     }
                                     DropdownMenuItem(text = { Text("Remove from playlist") }, onClick = {
