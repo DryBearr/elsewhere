@@ -1196,3 +1196,41 @@ fn previous_entry_goes_back_however_far_in() {
         "the first stays the first"
     );
 }
+
+#[test]
+fn quick_pause_play_next_and_previous_still_play_to_the_end() {
+    // What the iOS UI test does with the player bar, again and again with every timing.
+    let shelf = shelf("quick-bar");
+    let items = [
+        shelf.item("long", Some("long.m4a")),
+        shelf.item("song", Some("song.m4a")),
+    ];
+    let (queue, _) = queue(&shelf);
+    queue.command(Command::SetSpeed(3.0)).unwrap();
+    for round in 0..12u64 {
+        play(&queue, &items, 0);
+        wait(&queue, "long playing", |state| {
+            current_item(state) == Some(items[0]) && state.wants_play
+        });
+        let gap = Duration::from_millis(round * 7 % 60);
+        queue.command(Command::Pause).unwrap();
+        thread::sleep(gap);
+        queue.command(Command::Resume).unwrap();
+        thread::sleep(gap);
+        queue.command(Command::Next).unwrap();
+        wait(&queue, "song", |state| {
+            current_item(state) == Some(items[1])
+        });
+        thread::sleep(gap);
+        queue.command(Command::Previous).unwrap();
+        wait(&queue, "long again", |state| {
+            current_item(state) == Some(items[0])
+        });
+        let end = wait(&queue, "the end", |state| state.finished);
+        assert_eq!(
+            (end.current, end.problem.clone()),
+            (Some(1), None),
+            "round {round}: {end:?}"
+        );
+    }
+}
