@@ -58,7 +58,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -68,7 +67,6 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import uniffi.elsewhere.ItemSummary
 import uniffi.elsewhere.PlayerStatus
@@ -182,7 +180,6 @@ private fun Player(queue: QueueState, onClose: () -> Unit) {
             Box(Modifier.size(48.dp))
         }
         if (playback.hasVideo) {
-            LaunchedEffect(Unit) { Playback.videoEvents.addLast("player shows a video") }
             Video(queue, Modifier.padding(vertical = 12.dp))
         } else Box(
             Modifier
@@ -275,19 +272,10 @@ private fun Video(queue: QueueState, modifier: Modifier) {
 /** The SurfaceView mpv draws into; the screen stays on while the video plays. */
 @Composable
 private fun VideoSurfaceView(playing: Boolean, modifier: Modifier) {
-    // What the view went through, for the UI tests (and screen readers: "video, attached").
-    var status by remember { mutableStateOf("") }
-    var core by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) {
-        while (true) {
-            core = Playback.describeVideo()
-            delay(1000)
-        }
-    }
     AndroidView(
-        factory = { context -> VideoView(context) { said -> status = said } },
+        factory = { context -> VideoView(context) },
         update = { view -> view.keepScreenOn = playing },
-        modifier = modifier.testTag("video").semantics { stateDescription = "$status | $core" },
+        modifier = modifier.testTag("video"),
     )
 }
 

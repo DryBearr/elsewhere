@@ -30,26 +30,13 @@ object VideoSurface {
  * goes (another screen, the app in the background) the video goes off and the sound
  * plays on.
  */
-class VideoView(context: Context, private val status: (String) -> Unit = {}) :
-    SurfaceView(context), SurfaceHolder.Callback {
+class VideoView(context: Context) : SurfaceView(context), SurfaceHolder.Callback {
     init {
         holder.addCallback(this)
-        status("made")
-    }
-
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        status("on screen")
-    }
-
-    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
-        super.onSizeChanged(width, height, oldWidth, oldHeight)
-        status("${width}x$height")
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {
-        status("surface created")
-        status(Playback.attachSurface(holder.surface))
+        Playback.attachSurface(holder.surface)
     }
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {

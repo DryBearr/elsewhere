@@ -348,18 +348,18 @@ class MusicTest {
         }
     }
 
-    /** Waits for the queue's state to hold. */
+    /**
+     * Waits for the queue's state to hold. Through the test rule: it lets the screen draw
+     * meanwhile (a plain sleep would hold Compose's clock, and nothing on screen would move).
+     */
     private fun waitFor(what: String, timeout: Long = 15_000, check: (QueueState) -> Boolean) {
-        val deadline = System.currentTimeMillis() + timeout
-        while (true) {
-            val state = Playback.state.value
-            if (state != null && check(state)) return
-            if (System.currentTimeMillis() >= deadline) {
-                throw AssertionError(
-                    "never $what: $state\nvideo: ${Playback.videoEvents.toList()}\ncore log:\n${coreLog()}\nscreen:\n${screen()}",
-                )
-            }
-            Thread.sleep(20)
+        try {
+            ui.waitUntil(timeout) { Playback.state.value?.let(check) == true }
+        } catch (e: androidx.compose.ui.test.ComposeTimeoutException) {
+            throw AssertionError(
+                "never $what: ${Playback.state.value}\nvideo: ${Playback.videoEvents.toList()}\ncore log:\n${coreLog()}\nscreen:\n${screen()}",
+                e,
+            )
         }
     }
 }
