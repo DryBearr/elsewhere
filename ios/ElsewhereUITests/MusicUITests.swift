@@ -117,9 +117,10 @@ final class MusicUITests: XCTestCase {
         app.buttons["speed"].tap()
         app.buttons["2x"].tap()
         wait(app.buttons["speed"], "label CONTAINS '2x'")
+        // On at half speed: the 2 s song must not end while the queue is checked.
         app.buttons["speed"].tap()
-        app.buttons["1x"].tap()
-        wait(app.buttons["speed"], "label CONTAINS '1x'")
+        app.buttons["0.5x"].tap()
+        wait(app.buttons["speed"], "label CONTAINS '0.5x'")
 
         // Paused, the slider goes to the middle (3 s of 6) and the player follows.
         wait(app.buttons["player-play"], "exists == true")
