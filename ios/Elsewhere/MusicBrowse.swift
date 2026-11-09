@@ -84,7 +84,7 @@ struct AllItemsList: View {
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("order")
                 }
-            ) { [order] after in
+            ) { [order = order] after in
                 try tabItems(tabId: tabId, order: order, after: after, limit: browsePage)
             }
         } else {
@@ -163,7 +163,7 @@ struct NamedItemsView: View {
     var body: some View {
         Group {
             if let tabId = context.tabId {
-                PagedItems(context: context, key: "\(group)-\(name)", empty: "Nothing here any more.", play: true) { [group, name] after in
+                PagedItems(context: context, key: "\(group)-\(name)", empty: "Nothing here any more.", play: true) { [group = group, name = name] after in
                     if group == .artist {
                         return try artistItems(tabId: tabId, artist: name, after: after, limit: browsePage)
                     }
