@@ -154,6 +154,7 @@ object Playback {
         starting++
         command(name, {
             starting--
+            settle()
             changed()
             done()
         }, call)
@@ -186,8 +187,19 @@ object Playback {
         val old = shown.value
         if (old != null && old.revision >= state.revision) return
         shown.value = state
-        if (!state.wantsPlay && (state.finished || state.entries.isEmpty())) abandonFocus()
+        settle()
         changed()
+    }
+
+    /**
+     * Done playing (the end, or nothing queued): the focus goes back to other apps. Not
+     * while a play is on its way: the queue's first state is empty, and comes after the focus.
+     */
+    private fun settle() {
+        val state = shown.value ?: return
+        if (starting == 0 && !resumeAfterLoss && !state.wantsPlay && (state.finished || state.entries.isEmpty())) {
+            abandonFocus()
+        }
     }
 
     private fun changed() {

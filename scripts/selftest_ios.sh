@@ -156,6 +156,14 @@ expect_new 8-unplugged-play queue status=playing wants=true
 act media-reset
 expect_new 8-media-reset queue-advancing 2000
 
+# The end of the queue: still on the lock screen, and Play starts over.
+act repeat-off
+expect_new 8-end queue finished=true wants=false
+act report
+expect_new 8-end nowplaying shown=true rate=0.0
+act remote-play
+expect_new 8-end-play queue status=playing wants=true current=0
+
 # Stop: the queue empties and it leaves the lock screen.
 act remote-stop
 expect_new 8-stop queue entries=0

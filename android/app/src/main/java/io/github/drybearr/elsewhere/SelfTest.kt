@@ -173,6 +173,7 @@ object SelfTest {
                 thief = null
             }
             "noisy" -> Playback.becameNoisy()
+            "repeat-off" -> Playback.setRepeat(RepeatMode.OFF)
             "report" -> Playback.state.value?.let { onQueue(it) }
             else -> {
                 Log.i(TAG, "ERROR unknown self-test action $action")
@@ -197,7 +198,7 @@ object SelfTest {
 /**
  * Debug builds only (src/debug/AndroidManifest.xml):
  * `adb shell am broadcast -n io.github.drybearr.elsewhere/.SelfTestReceiver --es action <action>`
- * with focus-transient, focus-duck, focus-permanent, focus-return, noisy or report.
+ * with focus-transient, focus-duck, focus-permanent, focus-return, noisy, repeat-off or report.
  */
 class SelfTestReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {

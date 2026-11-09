@@ -48,7 +48,11 @@ act() {
 expect_system() {
   local step=$1 status dump
   shift
-  if [ "$1" = session ]; then dump=media_session; else dump="activity services $package"; fi
+  case $1 in
+    session) dump=media_session ;;
+    focus) dump=audio ;;
+    *) dump="activity services $package" ;;
+  esac
   for _ in $(seq 30); do
     # shellcheck disable=SC2086 # the dumpsys arguments are words
     adb shell dumpsys $dump > "$step.dump"
@@ -121,6 +125,7 @@ launch background
 expect 9-play queue status=playing wants=true title=long
 expect_system 9-play session 3
 expect_system 9-play service foreground
+expect_system 9-play focus held
 key KEYCODE_HOME
 expect 9-home queue-advancing 3000
 key KEYCODE_SLEEP
@@ -186,6 +191,17 @@ expect 9-other-app-play queue status=playing wants=true
 # Headphones unplugged.
 act noisy
 expect 9-noisy queue status=paused wants=false
+
+# The end of the queue: the focus goes back, the notification stays, and Play starts over.
+act repeat-off
+key KEYCODE_MEDIA_PLAY
+expect 9-end queue finished=true wants=false
+expect_system 9-end session 1
+expect_system 9-end service background
+expect_system 9-end focus none
+key KEYCODE_MEDIA_PLAY
+expect 9-end-play queue status=playing wants=true current=0
+expect_system 9-end-play focus held
 
 # Stop ends it all: the queue, the session, the notification and the service.
 key KEYCODE_MEDIA_STOP

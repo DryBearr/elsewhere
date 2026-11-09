@@ -28,6 +28,7 @@ and on `adb shell dumpsys` output (Android):
 
     check_selftest.py <dumpsys media_session> session <playback state number>|none
     check_selftest.py <dumpsys activity services> service foreground|background|none
+    check_selftest.py <dumpsys audio> focus held|none
 
 Exits 0 when the check holds, 1 when it does not hold (yet; the scripts keep waiting),
 2 on bad usage and 3 when something is definitely wrong (a final state that does not
@@ -96,6 +97,23 @@ def session(path):
     return None
 
 
+def focus(path):
+    """'held' if the app is in the audio focus stack of `dumpsys audio`, else 'none'."""
+    with open(path, errors='replace') as dump:
+        lines = dump.read().splitlines()
+    inside = False
+    for line in lines:
+        if 'Audio Focus stack entries' in line:
+            inside = True
+            continue
+        if inside:
+            if not line.strip() or not line[0].isspace():
+                break
+            if f'pack: {PACKAGE}' in line:
+                return 'held'
+    return 'none'
+
+
 def service(path):
     """'foreground', 'background' or 'none' for PlaybackService in `dumpsys activity services`."""
     with open(path, errors='replace') as dump:
@@ -123,6 +141,8 @@ def main():
         return 0 if found and found[0] and found[1] == args[0] else 1
     if check == 'service':
         return 0 if service(path) == args[0] else 1
+    if check == 'focus':
+        return 0 if focus(path) == args[0] else 1
     states, finals, versions, errors, pids, played, refused, queue, shown = read(path)
     if errors:
         print('\n'.join(errors))

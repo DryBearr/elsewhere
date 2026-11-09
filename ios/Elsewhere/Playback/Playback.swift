@@ -141,6 +141,7 @@ final class Playback: ObservableObject {
         starting += 1
         command(name, {
             self.starting -= 1
+            self.settle()
             self.changed()
             done()
         }, call)
@@ -169,8 +170,17 @@ final class Playback: ObservableObject {
     fileprivate func publish(_ new: QueueState) {
         if let old = state, old.revision >= new.revision { return }
         state = new
-        if !new.wantsPlay && (new.finished || new.entries.isEmpty) { deactivate() }
+        settle()
         changed()
+    }
+
+    /// Done playing (the end, or nothing queued): other apps' audio may go on. Not while a
+    /// play is on its way: the queue's first state is empty, and comes after the activation.
+    private func settle() {
+        guard let state, starting == 0, !resumeAfterInterruption, !state.wantsPlay,
+              state.finished || state.entries.isEmpty
+        else { return }
+        deactivate()
     }
 
     private func changed() {

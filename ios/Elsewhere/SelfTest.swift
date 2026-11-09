@@ -133,7 +133,7 @@ enum SelfTest {
     private static let prefix = "io.github.drybearr.elsewhere.selftest."
     private static let actions = [
         "remote-play", "remote-pause", "remote-toggle", "remote-next", "remote-previous", "remote-stop",
-        "interruption-began", "interruption-ended", "route-unplugged", "media-reset", "report",
+        "interruption-began", "interruption-ended", "route-unplugged", "media-reset", "repeat-off", "report",
     ]
 
     private static func listen() {
@@ -169,6 +169,8 @@ enum SelfTest {
             ])
         case "media-reset":
             center.post(name: AVAudioSession.mediaServicesWereResetNotification, object: session)
+        case "repeat-off":
+            playback.setRepeat(.off)
         case "report":
             if let state = playback.state { onQueue(state) }
             say("NOWPLAYING \(playback.nowPlayingLine)")
