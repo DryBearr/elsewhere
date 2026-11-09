@@ -298,8 +298,11 @@ final class MusicUITests: XCTestCase {
         wait(app.buttons["Play next"], "exists == true", in: app)
         XCTAssertFalse(app.buttons["Remove from playlist"].exists)
         XCTAssertFalse(app.buttons["Move down"].exists)
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.04)).tap()
-        wait(app.buttons["Play next"], "exists == false", in: app)
+        // Closing the menu by picking from it: the playlist picker, then Cancel.
+        app.buttons["Add to playlist…"].tap()
+        wait(app.buttons["pick-new"], "exists == true", in: app)
+        app.buttons["Cancel"].tap()
+        wait(app.buttons["pick-new"], "exists == false", in: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
 
         // Search: songs (any case) and playlists; a song found plays.
