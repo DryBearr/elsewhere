@@ -139,6 +139,9 @@ class MusicTest {
         openPlaylist()
         ui.onNode(hasText("Play") and hasClickAction()).performClick()
         waitFor("long playing") { it.nowPlaying?.title == "long" && it.playback.status == PlayerStatus.PLAYING }
+        // Paused, so long stays on while the screens are checked.
+        ui.onNodeWithContentDescription("Pause").performClick()
+        waitFor("paused") { !it.wantsPlay }
 
         // Open it from the bar, close it, open it again.
         ui.onNodeWithTag("open-player").performClick()
@@ -168,7 +171,6 @@ class MusicTest {
         waitFor("speed 1") { it.playback.speed == 1.0 }
 
         // Paused, the slider goes to 3 s and the player follows.
-        ui.onNodeWithContentDescription("Pause").performClick()
         waitFor("paused") { it.playback.status == PlayerStatus.PAUSED }
         waitFor("a length") { (it.playback.durationMs ?: 0) > 0 }
         ui.onNodeWithTag("player-position").performSemanticsAction(SemanticsActions.SetProgress) { it(3000f) }
@@ -178,7 +180,7 @@ class MusicTest {
         // The queue, below the player: rows with their titles; tap one to play it.
         ui.waitUntil(15_000) { ui.onAllNodes(hasTestTag("player-list")).fetchSemanticsNodes().isNotEmpty() }
         ui.onNodeWithTag("player-list").performScrollToNode(hasTestTag("queue-1"))
-        ui.waitUntil(15_000) { rowTitle("queue-1") == "song" }
+        waitRows("song second") { rowTitle("queue-1") == "song" }
         ui.onNodeWithTag("queue-1").performClick()
         waitFor("song from the queue") { it.nowPlaying?.title == "song" && it.wantsPlay }
         ui.onNodeWithContentDescription("Pause").performClick()
@@ -187,7 +189,7 @@ class MusicTest {
         ui.onNodeWithTag("queue-menu-0").performClick()
         ui.onNodeWithText("Play next").performClick()
         waitFor("long next") { it.hasNext && it.current == 0u }
-        ui.waitUntil(15_000) { rowTitle("queue-1") == "long" }
+        waitRows("long second") { rowTitle("queue-1") == "long" }
         ui.onNodeWithTag("queue-menu-1").performClick()
         ui.onNodeWithText("Remove").performClick()
         waitFor("one left") { it.entryCount == 1u && !it.hasNext }
@@ -305,6 +307,16 @@ class MusicTest {
                         inner.config.getOrNull(SemanticsProperties.Text)?.joinToString("") { it.text }
                     }
             }
+
+    /** Waits for the queue's rows to hold; if they never do, says what they show. */
+    private fun waitRows(what: String, check: () -> Boolean) {
+        try {
+            ui.waitUntil(15_000, check)
+        } catch (e: androidx.compose.ui.test.ComposeTimeoutException) {
+            val rows = (0..3).map { "queue-$it=${rowTitle("queue-$it")}" }
+            throw AssertionError("never $what: rows $rows, entries ${Playback.entries.value}, state ${Playback.state.value}", e)
+        }
+    }
 
     /** Waits for the queue's state to hold. */
     private fun waitFor(what: String, timeout: Long = 15_000, check: (QueueState) -> Boolean) {
