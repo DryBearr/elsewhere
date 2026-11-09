@@ -22,6 +22,10 @@ final class Playback: ObservableObject {
 
     /// The newest state; nil until something is played.
     @Published private(set) var state: QueueState?
+    /// Why the last command did nothing (refused, no sound during a call); nil after one works.
+    @Published private(set) var message: String?
+    /// The saved playlist the queue was made from, if it was.
+    @Published private(set) var source: Int64?
 
     /// Commands that start playback and have not answered yet.
     private var starting = 0
@@ -63,11 +67,13 @@ final class Playback: ObservableObject {
     // MARK: What screens, the system and the self-test call
 
     func play(items: [Int64], start: Int, done: @escaping () -> Void = {}) {
-        startPlaying("play", done) { try $0.play(items: items, start: UInt32(start), autoplay: true) }
+        startPlaying("play", done, { self.source = nil }) { try $0.play(items: items, start: UInt32(start), autoplay: true) }
     }
 
     func playCollection(id: Int64, startEntry: Int64?, done: @escaping () -> Void = {}) {
-        startPlaying("play a playlist", done) { try $0.playCollection(collectionId: id, startEntry: startEntry, autoplay: true) }
+        startPlaying("play a playlist", done, { self.source = id }) {
+            try $0.playCollection(collectionId: id, startEntry: startEntry, autoplay: true)
+        }
     }
 
     func resume(done: @escaping () -> Void = {}) {
@@ -112,7 +118,7 @@ final class Playback: ObservableObject {
     /// Ends playback and empties the queue (it leaves the lock screen).
     func stop(done: @escaping () -> Void = {}) {
         forgetInterruption()
-        command("stop", done) { try $0.stop() }
+        command("stop", { self.source = nil; done() }) { try $0.stop() }
     }
 
     /// What the system's buttons do, by name (the self-test presses them by name too).
@@ -128,34 +134,45 @@ final class Playback: ObservableObject {
     // MARK: The queue
 
     /// Starts playback: the audio session first (refused during a phone call).
-    private func startPlaying(_ name: String, _ done: @escaping () -> Void, _ call: @escaping (CoreQueue) throws -> Void) {
+    private func startPlaying(_ name: String, _ done: @escaping () -> Void, _ worked: @escaping () -> Void = {},
+                              _ call: @escaping (CoreQueue) throws -> Void) {
         guard activate() else {
+            message = "Another app is using the sound (a call?). Try again after it."
             done()
             return
         }
-        keepGoing(name, done, call)
+        keepGoing(name, done, worked, call)
     }
 
     /// A command after which playback goes on.
-    private func keepGoing(_ name: String, _ done: @escaping () -> Void, _ call: @escaping (CoreQueue) throws -> Void) {
+    private func keepGoing(_ name: String, _ done: @escaping () -> Void, _ worked: @escaping () -> Void = {},
+                           _ call: @escaping (CoreQueue) throws -> Void) {
         starting += 1
         command(name, {
             self.starting -= 1
             self.settle()
             self.changed()
             done()
-        }, call)
+        }, worked, call)
     }
 
-    /// Runs `call` on the queue off the main thread (making the queue first if needed).
-    private func command(_ name: String, _ done: @escaping () -> Void, _ call: @escaping (CoreQueue) throws -> Void) {
+    /// Runs `call` on the queue off the main thread (making the queue first if needed). Then,
+    /// on the main thread: `worked` if it did, `message` says why if not, and `done` always.
+    private func command(_ name: String, _ done: @escaping () -> Void, _ worked: @escaping () -> Void = {},
+                         _ call: @escaping (CoreQueue) throws -> Void) {
         commands.async {
+            var failed: String?
             do {
                 try call(self.made())
             } catch {
-                print("Elsewhere: \(name) failed: \(describe(error))")
+                failed = describe(error)
+                print("Elsewhere: \(name) failed: \(failed!)")
             }
-            DispatchQueue.main.async(execute: done)
+            DispatchQueue.main.async {
+                self.message = failed
+                if failed == nil { worked() }
+                done()
+            }
         }
     }
 

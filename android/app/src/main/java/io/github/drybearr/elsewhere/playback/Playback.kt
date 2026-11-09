@@ -57,6 +57,16 @@ object Playback {
     val state: StateFlow<QueueState?> = shown.asStateFlow()
     private val watchers = CopyOnWriteArrayList<() -> Unit>()
 
+    private val told = MutableStateFlow<String?>(null)
+
+    /** Why the last command did nothing (refused, no sound during a call); null after one works. */
+    val message: StateFlow<String?> = told.asStateFlow()
+
+    private val playing = MutableStateFlow<Long?>(null)
+
+    /** The saved playlist the queue was made from, if it was. */
+    val source: StateFlow<Long?> = playing.asStateFlow()
+
     /** Commands that start playback and have not answered yet. */
     private var starting = 0
 
@@ -83,10 +93,12 @@ object Playback {
     // --- What screens, the service and the self-test call ------------------------------------
 
     fun playItems(items: List<Long>, start: Int, done: () -> Unit = {}) =
-        play("play", done) { it.play(items, start.toUInt(), true) }
+        play("play", done, { playing.value = null }) { it.play(items, start.toUInt(), true) }
 
     fun playCollection(collectionId: Long, startEntry: Long?, done: () -> Unit = {}) =
-        play("play a playlist", done) { it.playCollection(collectionId, startEntry, true) }
+        play("play a playlist", done, { playing.value = collectionId }) {
+            it.playCollection(collectionId, startEntry, true)
+        }
 
     fun resume(done: () -> Unit = {}) = play("resume", done) { it.resume() }
 
@@ -118,7 +130,7 @@ object Playback {
             resumeAfterLoss = false
             changed()
         }
-        command("stop", done) { it.stop() }
+        command("stop", { playing.value = null; done() }) { it.stop() }
     }
 
     /** Headphones unplugged or Bluetooth gone: pause before the sound comes out of the speaker. */
@@ -133,12 +145,13 @@ object Playback {
      * Starts playback: audio focus first (none during a phone call), then the service, so
      * Android lets it play on when the app goes to the background.
      */
-    private fun play(name: String, done: () -> Unit, call: (CoreQueue) -> Unit) {
+    private fun play(name: String, done: () -> Unit, worked: () -> Unit = {}, call: (CoreQueue) -> Unit) {
         if (!requestFocus()) {
+            told.value = "Another app is using the sound (a call?). Try again after it."
             done()
             return
         }
-        keepGoing(name, done, call)
+        keepGoing(name, done, worked, call)
         if (!PlaybackService.inForeground) {
             try {
                 app.startForegroundService(Intent(app, PlaybackService::class.java).setAction(PlaybackService.START))
@@ -150,25 +163,37 @@ object Playback {
     }
 
     /** A command after which playback goes on: the service stays in the foreground meanwhile. */
-    private fun keepGoing(name: String, done: () -> Unit, call: (CoreQueue) -> Unit) {
+    private fun keepGoing(name: String, done: () -> Unit, worked: () -> Unit = {}, call: (CoreQueue) -> Unit) {
         starting++
         command(name, {
             starting--
             settle()
             changed()
             done()
-        }, call)
+        }, worked, call)
     }
 
-    /** Runs `call` on the queue off the main thread (making the queue first if needed). */
-    private fun command(name: String, done: () -> Unit, call: (CoreQueue) -> Unit) {
+    /**
+     * Runs `call` on the queue off the main thread (making the queue first if needed). Then,
+     * on the main thread: `worked` if it did, [message] says why if not, and `done` always.
+     */
+    private fun command(name: String, done: () -> Unit, worked: () -> Unit = {}, call: (CoreQueue) -> Unit) {
         commands.execute {
-            try {
+            val failed = try {
                 call(queue())
+                null
             } catch (e: Exception) {
                 Log.w(TAG, "$name failed: ${describe(e)}")
-            } finally {
-                main.post(done)
+                describe(e)
+            }
+            main.post {
+                if (failed == null) {
+                    told.value = null
+                    worked()
+                } else {
+                    told.value = failed
+                }
+                done()
             }
         }
     }

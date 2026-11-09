@@ -7,7 +7,9 @@ import Foundation
 /// job), discard (every Interrupted job), ytdlp, player (plays the test files in the
 /// app's `media` folder through the real engine and sound output), or background (plays two
 /// test songs again and again through Playback; Darwin notifications then press its system
-/// buttons and play interruptions, unplugged headphones and a media services reset at it).
+/// buttons and play interruptions, unplugged headphones and a media services reset at it),
+/// or music (saves the UI tests' playlist from `-server <url>`, scripts/selftest_server.py,
+/// through yt-dlp like the Add tab does; ios/ElsewhereUITests then plays it).
 enum SelfTest {
     #if DEBUG
     static let enabled = true
@@ -38,6 +40,10 @@ enum SelfTest {
                     try await player()
                 case "background":
                     try background()
+                case "music":
+                    let at = arguments.firstIndex(of: "-server").map { $0 + 1 }
+                    let server = at.flatMap { $0 < arguments.count ? arguments[$0] : nil } ?? "http://127.0.0.1:8765"
+                    try music(server: server)
                 default:
                     break
                 }
@@ -128,12 +134,52 @@ enum SelfTest {
         }
     }
 
+    /// Saves the UI tests' playlist as songs (again is fine: only what is new is saved). A
+    /// song file the test took away comes back first.
+    private static func music(server: String) throws {
+        let files = FileManager.default
+        let music = Core.media.appendingPathComponent("Music")
+        if let found = files.enumerator(at: music, includingPropertiesForKeys: nil) {
+            for case let file as URL in found where file.pathExtension == "removed" {
+                try? files.moveItem(at: file, to: file.deletingPathExtension())
+            }
+        }
+        let id = try savePlaylist(link: "\(server)/music-playlist.html",
+                                  options: PlaylistOptions(format: .audio, lyrics: false, limit: nil))
+        say("SAVING id=\(id)")
+    }
+
+    /// Takes the file of the UI tests' playlist's second song away (put back by `music`).
+    private static func removeSecondSong() {
+        Task.detached {
+            do {
+                guard let music = try categories().first(where: { $0.name == "Music" }),
+                      let list = try collections(categoryId: music.id).first(where: { $0.name == "Music Playlist" })
+                else {
+                    say("ERROR remove-second-song: no Music Playlist")
+                    return
+                }
+                let rows = try collectionItems(collectionId: list.id, after: nil, limit: 0).entries
+                guard rows.count > 1 else {
+                    say("ERROR remove-second-song: \(rows.count) songs")
+                    return
+                }
+                let file = URL(fileURLWithPath: try itemFile(id: rows[1].item.id))
+                try FileManager.default.moveItem(at: file, to: file.appendingPathExtension("removed"))
+                say("REMOVED \(file.lastPathComponent)")
+            } catch {
+                say("ERROR remove-second-song: \(describe(error))")
+            }
+        }
+    }
+
     /// Darwin notifications the self-test sends:
     /// `xcrun simctl spawn <udid> notifyutil -p io.github.drybearr.elsewhere.selftest.<action>`.
     private static let prefix = "io.github.drybearr.elsewhere.selftest."
     private static let actions = [
         "remote-play", "remote-pause", "remote-toggle", "remote-next", "remote-previous", "remote-stop",
         "interruption-began", "interruption-ended", "route-unplugged", "media-reset", "repeat-off", "report",
+        "remove-second-song",
     ]
 
     private static func listen() {
@@ -171,6 +217,8 @@ enum SelfTest {
             center.post(name: AVAudioSession.mediaServicesWereResetNotification, object: session)
         case "repeat-off":
             playback.setRepeat(.off)
+        case "remove-second-song":
+            removeSecondSong()
         case "report":
             if let state = playback.state { onQueue(state) }
             say("NOWPLAYING \(playback.nowPlayingLine)")

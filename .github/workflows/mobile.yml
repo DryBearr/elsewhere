@@ -90,6 +90,10 @@ jobs:
           gradle -p android assembleDebug
           cp android/app/build/outputs/apk/debug/app-debug.apk Elsewhere-x86_64.apk
 
+      # The playlist the UI tests save into the app (the emulator reaches it as 10.0.2.2).
+      - name: Serve the UI tests' playlist
+        run: nohup python3 scripts/selftest_server.py 8765 > selftest-server.log 2>&1 &
+
       - name: Enable KVM for the emulator
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -131,6 +135,7 @@ jobs:
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh ytdlp-tests --ignored youtube_challenge --nocapture
             adb shell sh /data/local/tmp/elsewhere/run-tests.sh ytdlp-tests --ignored real_site || echo "::warning::Real YouTube tests failed on the Android emulator (YouTube often blocks CI machines)"
             bash scripts/selftest_android.sh Elsewhere-x86_64.apk
+            adb logcat -c; gradle -p android connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.server=http://10.0.2.2:8765 || { adb logcat -d -s Elsewhere:I ElsewhereJobs:I TestRunner:I AndroidRuntime:E | tail -150; exit 1; }
 
   ios:
     runs-on: macos-latest
@@ -238,3 +243,17 @@ jobs:
         run: |
           app="$RUNNER_TEMP/derived/Build/Products/Debug-iphonesimulator/Elsewhere.app"
           scripts/selftest_ios.sh "$UDID" "$app"
+
+      - name: Test the Music tab through the app's UI
+        run: |
+          nohup python3 scripts/selftest_server.py 8765 > selftest-server.log 2>&1 &
+          cd ios
+          xcodebuild test \
+            -project Elsewhere.xcodeproj \
+            -scheme Elsewhere \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/derived" \
+            -only-testing:ElsewhereUITests \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES
