@@ -156,9 +156,13 @@ final class MusicUITests: XCTestCase {
         app.buttons["song-1"].press(forDuration: 1.2)
         app.buttons["Add to queue"].tap()
         wait(app.staticTexts["now-title"], "label == 'song'")
+        // Paused, so the song is still there when the menu is done (the simulator is slow).
+        app.buttons["bar-pause"].tap()
+        wait(app.buttons["bar-play"], "exists == true")
         app.buttons["song-0"].press(forDuration: 1.2)
         app.buttons["Play next"].tap()
-        wait(app.buttons["bar-next"], "isEnabled == true")
+        wait(app.buttons["bar-next"], "isEnabled == true", in: app)
+        app.buttons["bar-next"].tap()
         wait(app.staticTexts["now-title"], "label == 'long'", timeout: 15)
         app.buttons["bar-stop"].tap()
     }

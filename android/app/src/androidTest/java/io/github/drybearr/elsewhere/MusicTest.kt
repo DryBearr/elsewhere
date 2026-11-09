@@ -186,27 +186,26 @@ class MusicTest {
         ui.onNodeWithContentDescription("Pause").performClick()
         waitFor("paused on song") { !it.wantsPlay }
         // Play next brings long after song; remove takes it out again.
-        ui.onNodeWithTag("queue-menu-0").performClick()
-        ui.onNodeWithText("Play next").performClick()
+        menu("queue-menu-0", "Play next")
         waitFor("long next") { it.hasNext && it.current == 0u }
         waitRows("long second") { rowTitle("queue-1") == "long" }
-        ui.onNodeWithTag("queue-menu-1").performClick()
-        ui.onNodeWithText("Remove").performClick()
+        menu("queue-menu-1", "Remove")
         waitFor("one left") { it.entryCount == 1u && !it.hasNext }
         // Removing the last one empties the queue: the player closes itself.
-        ui.onNodeWithTag("queue-menu-0").performClick()
-        ui.onNodeWithText("Remove").performClick()
+        menu("queue-menu-0", "Remove")
         waitFor("empty") { it.entryCount == 0u }
         ui.waitUntil(10_000) { ui.onAllNodes(hasTestTag("player-title")).fetchSemanticsNodes().isEmpty() }
 
         // From a playlist: add to an empty queue plays; play next comes after it.
-        ui.onNodeWithTag("song-menu-1").performClick()
-        ui.onNodeWithText("Add to queue").performClick()
+        menu("song-menu-1", "Add to queue")
         waitFor("song added and playing") { it.entryCount == 1u && it.nowPlaying?.title == "song" && it.wantsPlay }
-        ui.onNodeWithTag("song-menu-0").performClick()
-        ui.onNodeWithText("Play next").performClick()
+        // Paused, so the song is still there when the menu is done.
+        ui.onNodeWithContentDescription("Pause").performClick()
+        waitFor("song paused") { !it.wantsPlay && !it.finished }
+        menu("song-menu-0", "Play next")
         waitFor("long after song") { it.entryCount == 2u && it.hasNext }
-        waitFor("long plays next", 15_000) { it.nowPlaying?.title == "long" }
+        ui.onNodeWithContentDescription("Next").performClick()
+        waitFor("long next", 15_000) { it.nowPlaying?.title == "long" }
     }
 
     @Test
@@ -308,11 +307,22 @@ class MusicTest {
                     }
             }
 
+<<<<<<< HEAD
     /** The end of the core's own log (mpv's errors go there): the app is gone after the run. */
     private fun coreLog(): String = runCatching {
         File(InstrumentationRegistry.getInstrumentation().targetContext.filesDir, "logs/elsewhere.log")
             .readLines().takeLast(40).joinToString("\n")
     }.getOrElse { "(none: $it)" }
+=======
+    /** Opens the menu with this tag and picks `item`; waits for the menu to close again. */
+    private fun menu(tag: String, item: String) {
+        ui.onNodeWithTag(tag).performClick()
+        ui.waitUntil(10_000) { ui.onAllNodes(hasText(item)).fetchSemanticsNodes().isNotEmpty() }
+        ui.onNodeWithText(item).performClick()
+        ui.waitUntil(10_000) { ui.onAllNodes(hasText(item)).fetchSemanticsNodes().isEmpty() }
+        ui.waitForIdle()
+    }
+>>>>>>> feat/player-screen
 
     /** Waits for the queue's rows to hold; if they never do, says what they show. */
     private fun waitRows(what: String, check: () -> Boolean) {
