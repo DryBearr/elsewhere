@@ -214,6 +214,12 @@ impl CoreQueue {
         Ok(self.queue.command(Command::SetVolume(volume))?)
     }
 
+    /// Builds the sound output again, where playback is: iOS calls it after its media
+    /// services were reset (AVAudioSession.mediaServicesWereResetNotification).
+    pub fn reload_audio(&self) -> Result<(), ApiError> {
+        Ok(self.queue.command(Command::ReloadAudio)?)
+    }
+
     /// Adds item ids at the end (shuffled: among the entries still to come).
     pub fn add(&self, items: Vec<i64>) -> Result<(), ApiError> {
         Ok(self.queue.command(Command::Add(items))?)

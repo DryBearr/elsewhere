@@ -31,6 +31,8 @@ targets:
         LSSupportsOpeningDocumentsInPlace: true
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # Playback goes on in the background (Elsewhere/Playback).
+        UIBackgroundModes: [audio]
     sources:
       - Elsewhere
       # Swift bindings for the Rust core, written by scripts/ios_rust.sh.

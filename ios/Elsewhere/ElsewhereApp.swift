@@ -11,6 +11,7 @@ struct ElsewhereApp: App {
 
     init() {
         Core.boot()
+        Playback.shared.start()
         SelfTest.run(arguments: ProcessInfo.processInfo.arguments)
     }
 

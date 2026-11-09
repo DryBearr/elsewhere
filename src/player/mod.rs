@@ -172,6 +172,10 @@ fn configure(mpv: &Handle) -> Result<(), Problem> {
         ("idle", "yes"),
         ("keep-open", "yes"),
     ];
+    // iOS: mpv's sound output mixes with other apps unless exclusive, and an app that
+    // mixes gets no lock screen controls and no interruptions (calls) of its own.
+    #[cfg(target_os = "ios")]
+    required.push(("audio-exclusive", "yes"));
     if NULL_OUTPUT.load(Ordering::SeqCst) {
         required.extend([("vo", "null"), ("ao", "null")]);
     } else {
@@ -373,6 +377,12 @@ impl Player {
         }
         let volume = volume.clamp(0.0, 100.0);
         self.mpv_call(|mpv| mpv.set_double("volume", volume))
+    }
+
+    /// Builds the sound output again, where the file is (iOS after its media services were
+    /// reset, which breaks the old one). Nothing open: nothing to do.
+    pub fn reload_audio(&self) -> Result<(), Problem> {
+        self.mpv_call(|mpv| mpv.command(&["ao-reload"]))
     }
 
     /// Closes the file: Idle.

@@ -1,10 +1,13 @@
+import AVFoundation
 import Foundation
 
 /// The CI check of the job path through the real app (scripts/selftest_ios.sh). Debug
 /// builds only: every job state the store receives is printed as one line, and the launch
 /// argument `-selftest <mode>` makes the app act at launch: demo, long-demo, resume (every Interrupted
-/// job), discard (every Interrupted job), ytdlp, or player (plays the test files in the
-/// app's `media` folder through the real engine and sound output).
+/// job), discard (every Interrupted job), ytdlp, player (plays the test files in the
+/// app's `media` folder through the real engine and sound output), or background (plays two
+/// test songs again and again through Playback; Darwin notifications then press its system
+/// buttons and play interruptions, unplugged headphones and a media services reset at it).
 enum SelfTest {
     #if DEBUG
     static let enabled = true
@@ -15,6 +18,7 @@ enum SelfTest {
     static func run(arguments: [String]) {
         guard enabled, let flag = arguments.firstIndex(of: "-selftest"), flag + 1 < arguments.count else { return }
         let mode = arguments[flag + 1]
+        listen()
         Task.detached {
             do {
                 switch mode {
@@ -32,6 +36,8 @@ enum SelfTest {
                     say("YTDLP \(try ytdlpVersion())")
                 case "player":
                     try await player()
+                case "background":
+                    try background()
                 default:
                     break
                 }
@@ -88,6 +94,92 @@ enum SelfTest {
         } catch ApiError.Failed(let problem) {
             say("PLAYER refused=\(problem.kind)")
         }
+    }
+
+    /// One line per playlist player state.
+    static func onQueue(_ state: QueueState) {
+        guard enabled else { return }
+        let playback = state.playback
+        let current = state.current.map { "\($0)" } ?? "null"
+        let item = state.nowPlaying.map { "\($0.itemId)" } ?? "null"
+        let duration = playback.durationMs.map { "\($0)" } ?? "null"
+        let problem = state.problem.map { "\($0.kind)" } ?? "null"
+        say("QUEUE rev=\(state.revision) entries=\(state.entries.count) current=\(current) item=\(item) status=\(playback.status) wants=\(state.wantsPlay) pos=\(playback.positionMs) dur=\(duration) volume=\(playback.volume) finished=\(state.finished) next=\(state.hasNext) keeps=\(Playback.shared.keepsGoing) problem=\(problem) title=\(state.nowPlaying?.title ?? "null")")
+    }
+
+    /// Adds two test songs to the Music tab and plays them again and again through Playback.
+    private static func background() throws {
+        let files = FileManager.default
+        guard let music = try categories().first(where: { $0.name == "Music" }) else {
+            say("ERROR background: no Music tab")
+            return
+        }
+        let folder = Core.media.appendingPathComponent("\(music.name)/selftest-background")
+        try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        var items: [Int64] = []
+        for name in ["long.m4a", "song.m4a"] {
+            let file = folder.appendingPathComponent(name)
+            try? files.removeItem(at: file)
+            try files.copyItem(at: Bundle.main.bundleURL.appendingPathComponent("media/\(name)"), to: file)
+            items.append(try addFile(tabId: music.id, path: file.path))
+        }
+        DispatchQueue.main.async {
+            Playback.shared.play(items: items, start: 0) { Playback.shared.setRepeat(.all) }
+        }
+    }
+
+    /// Darwin notifications the self-test sends:
+    /// `xcrun simctl spawn <udid> notifyutil -p io.github.drybearr.elsewhere.selftest.<action>`.
+    private static let prefix = "io.github.drybearr.elsewhere.selftest."
+    private static let actions = [
+        "remote-play", "remote-pause", "remote-toggle", "remote-next", "remote-previous", "remote-stop",
+        "interruption-began", "interruption-ended", "route-unplugged", "media-reset", "report",
+    ]
+
+    private static func listen() {
+        let center = CFNotificationCenterGetDarwinNotifyCenter()
+        for action in actions {
+            CFNotificationCenterAddObserver(center, nil, { _, _, name, _, _ in
+                guard let name = name?.rawValue as String? else { return }
+                let action = String(name.dropFirst(SelfTest.prefix.count))
+                DispatchQueue.main.async { SelfTest.act(action) }
+            }, (prefix + action) as CFString, nil, .deliverImmediately)
+        }
+    }
+
+    /// What the self-test sent (main thread). Interruptions, route changes and the media
+    /// services reset are posted as iOS posts them, to the same observers.
+    private static func act(_ action: String) {
+        let playback = Playback.shared
+        let session = AVAudioSession.sharedInstance()
+        let center = NotificationCenter.default
+        switch action {
+        case "interruption-began":
+            center.post(name: AVAudioSession.interruptionNotification, object: session, userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.began.rawValue,
+            ])
+        case "interruption-ended":
+            center.post(name: AVAudioSession.interruptionNotification, object: session, userInfo: [
+                AVAudioSessionInterruptionTypeKey: AVAudioSession.InterruptionType.ended.rawValue,
+                AVAudioSessionInterruptionOptionKey: AVAudioSession.InterruptionOptions.shouldResume.rawValue,
+            ])
+        case "route-unplugged":
+            center.post(name: AVAudioSession.routeChangeNotification, object: session, userInfo: [
+                AVAudioSessionRouteChangeReasonKey: AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue,
+            ])
+        case "media-reset":
+            center.post(name: AVAudioSession.mediaServicesWereResetNotification, object: session)
+        case "report":
+            if let state = playback.state { onQueue(state) }
+            say("NOWPLAYING \(playback.nowPlayingLine)")
+        default:
+            guard action.hasPrefix("remote-"), let press = playback.remoteActions[String(action.dropFirst(7))] else {
+                say("ERROR unknown self-test action \(action)")
+                return
+            }
+            press(playback)
+        }
+        say("ACTED \(action)")
     }
 
     fileprivate static func say(_ line: String) {

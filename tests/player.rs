@@ -185,6 +185,42 @@ fn a_paused_open_seeks_plays_and_starts_over_at_the_end() {
 }
 
 #[test]
+fn reloading_the_sound_output_keeps_playing() {
+    let (player, seen) = new_player();
+    // Nothing open: nothing to do, and no harm.
+    player.reload_audio().unwrap();
+    player.open(&media("long.m4a"), 0, true).unwrap();
+    let playing = wait_for(&player, &seen, "playing past 1 s", |state| {
+        state.status == Status::Playing && state.position_ms >= 1000
+    });
+    player.reload_audio().unwrap();
+    // Where it was, and on to the end.
+    let after = wait_for(&player, &seen, "playing again", |state| {
+        state.status == Status::Playing && state.position_ms > playing.position_ms
+    });
+    assert!(after.position_ms >= playing.position_ms);
+    let end = final_state(&player, &seen);
+    assert_eq!(end.status, Status::Ended, "{end:?}");
+    // Paused stays paused.
+    player.open(&media("long.m4a"), 0, false).unwrap();
+    wait_for(&player, &seen, "paused", |state| {
+        state.status == Status::Paused
+    });
+    player.reload_audio().unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let paused = player.state();
+    assert_eq!(paused.status, Status::Paused);
+    // mpv seeks to where its sound output was: a fraction of a second may go by.
+    assert!(paused.position_ms < 500, "{paused:?}");
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        player.state().position_ms,
+        paused.position_ms,
+        "a paused player stays put"
+    );
+}
+
+#[test]
 fn speed_and_volume_stay_in_range() {
     let (player, seen) = new_player();
     player.set_speed(10.0).unwrap();

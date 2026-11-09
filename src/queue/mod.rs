@@ -130,6 +130,8 @@ pub enum Command {
     SetSpeed(f64),
     /// 0 to 100 (for example lower while a navigation voice speaks).
     SetVolume(f64),
+    /// Builds the sound output again (iOS after its media services were reset).
+    ReloadAudio,
     Add(Vec<i64>),
     Remove(u64),
     Move {
@@ -487,6 +489,7 @@ impl Actor {
             }
             Command::SetSpeed(speed) => self.player.set_speed(speed),
             Command::SetVolume(volume) => self.player.set_volume(volume),
+            Command::ReloadAudio => self.player.reload_audio(),
             Command::Add(items) => {
                 if items.is_empty() {
                     return Ok(());

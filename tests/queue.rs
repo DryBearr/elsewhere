@@ -1000,6 +1000,28 @@ fn volume_goes_down_and_up_within_range() {
 }
 
 #[test]
+fn reloading_the_sound_output_plays_on() {
+    let shelf = shelf("reload-audio");
+    let a = shelf.item("A", Some("long.m4a"));
+    let b = shelf.item("B", Some("song.m4a"));
+    let (queue, _) = queue(&shelf);
+    // An empty queue: nothing to reload.
+    queue.command(Command::ReloadAudio).unwrap();
+    play(&queue, &[a, b], 0);
+    wait(&queue, "playing A", |state| {
+        state.current == Some(0) && state.playback.status == Status::Playing
+    });
+    queue.command(Command::ReloadAudio).unwrap();
+    let state = queue.state();
+    assert!(state.wants_play);
+    assert_eq!(state.current, Some(0));
+    // The same entry plays on, then the next one.
+    let end = wait(&queue, "finished", |state| state.finished);
+    assert_eq!(end.current, Some(1));
+    assert!(end.skipped.is_empty(), "{:?}", end.skipped);
+}
+
+#[test]
 fn previous_entry_goes_back_however_far_in() {
     let shelf = shelf("previous-entry");
     let a = shelf.item("A", Some("long.m4a"));

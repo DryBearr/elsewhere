@@ -22,6 +22,7 @@ Usage (checks are case-insensitive about the status):
     check_selftest.py <log> queue-absent <field=value>...  (no queue line has them all)
     check_selftest.py <log> queue-advancing <ms>           (played at least this long)
     check_selftest.py <log> queue-moved                    (on another entry than the first line)
+    check_selftest.py <log> nowplaying <field=value>...    (iOS: the lock screen showed them all)
 
 and on `adb shell dumpsys` output (Android):
 
@@ -42,7 +43,7 @@ PACKAGE = 'io.github.drybearr.elsewhere'
 
 def read(path):
     states, finals, versions, errors, pids = [], [], [], [], {}
-    played, refused, queue = {}, [], []
+    played, refused, queue, shown = {}, [], [], []
     with open(path, errors='replace') as log:
         for line in log:
             if 'ElsewhereJobs' not in line:
@@ -62,9 +63,11 @@ def read(path):
                 refused.append(fields.get('refused'))
             elif ' QUEUE ' in line:
                 queue.append(fields)
+            elif ' NOWPLAYING ' in line:
+                shown.append(fields)
             elif ' ERROR ' in line:
                 errors.append(line.strip())
-    return states, finals, versions, errors, pids, played, refused, queue
+    return states, finals, versions, errors, pids, played, refused, queue, shown
 
 
 def matches(fields, wanted):
@@ -120,7 +123,7 @@ def main():
         return 0 if found and found[0] and found[1] == args[0] else 1
     if check == 'service':
         return 0 if service(path) == args[0] else 1
-    states, finals, versions, errors, pids, played, refused, queue = read(path)
+    states, finals, versions, errors, pids, played, refused, queue, shown = read(path)
     if errors:
         print('\n'.join(errors))
         return 3
@@ -169,6 +172,9 @@ def main():
             print(f'a queue state that must not come: {found[0]}')
             return 3
         return 0
+    if check == 'nowplaying':
+        wanted = dict(arg.split('=', 1) for arg in args)
+        return 0 if any(matches(fields, wanted) for fields in shown) else 1
     if check == 'queue-advancing':
         # Position gained while playing on the same entry, added up.
         played_ms, last = 0, None
